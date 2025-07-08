@@ -45,12 +45,16 @@ class Args:
     env_id: str = 'CartPole-v1'
     # Total timesteps allowed in the whole experiment
     total_timesteps: int = 500_000
+    # # Learning rate for the optimizer
+    #learning_rate: float = 2.5e-4
     # Learning rate for the optimizer
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 1e-4 # Better for CfC models
     # Number of environments for parallel game processing
     num_envs: int = 4
     # Total number of steps to run in each environment per policy rollout
     num_steps: int = 128
+    # Size of the LNN hidden state
+    hidden_size: int = 64
     #Toggles annealing for policy and value networks
     anneal_lr: bool = True
     # Gamma value
@@ -110,21 +114,31 @@ class Agent(nn.Module):
 
         obs_space, action_space = np.array(envs.single_observation_space.shape).prod(), np.array(envs.single_action_space).prod()
         
+        self.critic = nn.Sequential(
+            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64, 1), std=1.0) # Only one output as this is the critic model, and is generating an advantage value for PPO
+        )
+
         # Create critic model, only pass obs_space as action_space isn't needed in a critic model
-        self.critic = lnn_models.CriticCfC(obs_space)
+        # self.critic = lnn_models.CriticCfC(obs_space)
         
         # Create the actor model. Pass in the envs which will adapt depending on the tasks at hand
         self.actor = lnn_models.ActorCfC(obs_space, action_space.n)
 
+        # self.actor = torch.compile(self.actor, backend="aot_eager")
+
     def get_value(self, x):
         return self.critic(x)
     
-    def get_action_and_value(self, x, action=None):
-        logits = self.actor(x)
+    def get_action_and_value(self, x, actor_states, action=None):
+        logits, new_actor_states = self.actor(x, actor_states)
         probs = Categorical(logits=logits)
         if action is None:
             action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(x)
+        return action, probs.log_prob(action), probs.entropy(), self.critic(x), new_actor_states
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -180,7 +194,9 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-
+    actor_h_states = torch.zeros((args.num_steps, args.num_envs, args.hidden_size)).to(device)
+    actor_c_states = torch.zeros((args.num_steps, args.num_envs, args.hidden_size)).to(device)
+    
     # Try not to modify
     # Start game
     global_step = 0
@@ -197,10 +213,21 @@ if __name__ == "__main__":
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]['lr'] = lrnow
 
+        # Initialize hidden states to 0 at the start of each episode
+        actor_states = [
+            torch.zeros((args.num_envs, args.hidden_size)).to(device),
+            torch.zeros((args.num_envs, args.hidden_size)).to(device)
+        ]
+
         for step in range(0, args.num_steps):
             global_step += args.num_envs # account for each step in every env
             obs[step] = next_obs
             dones[step] = next_done
+
+            # Store the current steps states for later retrieval during update training
+            # Intialized to zero but update over time
+            actor_h_states[step] = actor_states[0]
+            actor_c_states[step] = actor_states[1]
 
             # Algorithm logic: action logic
             # During the collection of data, we pass the state to the model
@@ -208,7 +235,14 @@ if __name__ == "__main__":
             # Learning occurs after data is collected and epochs are run
             with torch.no_grad():
                 # Get the action the actor takes. And get the value the critic assigns said action
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
+                action, logprob, _, value, new_actor_states = agent.get_action_and_value(next_obs, actor_states)
+                
+                # Update the actor_states with new states, resetting hidden states where the next_state is terminal
+                for i in range(len(actor_states)):
+                    new_actor_states[i] = new_actor_states[i] * (1.0 - next_done.unsqueeze(1))
+                
+                actor_states = new_actor_states
+
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
@@ -219,13 +253,13 @@ if __name__ == "__main__":
             rewards[step] = torch.tensor(reward).to(device)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
 
-            # If the the game is over, log the stats
-            if 'final_info' in infos:
-                for info in infos['final_info']:
-                    if info and 'episode' in info:
-                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                        writer.add_scalar('charts/episodic_return', info['episode']['r'], global_step)
-                        writer.add_scalar('charts/episodic_length', info['episode']['l'], global_step)
+            # Log the rewards after each episode of every environment ends
+            if "episode" in infos and "_episode" in infos:
+                for i, finished in enumerate(infos["_episode"]):
+                    if finished:
+                        print(f"global_step={global_step}, env={i}, episodic_return={infos['episode']['r'][i]}", flush=True)
+                        writer.add_scalar("charts/episodic_return", infos['episode']['r'][i], global_step)
+                        writer.add_scalar("charts/episodic_length", infos['episode']['l'][i], global_step)
         
         # Calculate advantages for future usage in algorithm 
         with torch.no_grad():
@@ -277,6 +311,8 @@ if __name__ == "__main__":
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
+        b_h_states = actor_h_states.reshape(-1, 64)
+        b_c_states = actor_c_states.reshape(-1, 64)
 
         # Optimize the policy (actor) and value (critic) networks
         b_inds = np.arange(args.batch_size)
@@ -291,8 +327,15 @@ if __name__ == "__main__":
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
 
+                # Extract states for this mini-batch
+                # and pass to model as one array
+                mb_states = [
+                    b_h_states[mb_inds],
+                    b_c_states[mb_inds]
+                ]
+                
                 # Forward pass (with grad) the minibatch through to the model to get values associated with the provided action
-                _, new_log_prob, entropy, new_value = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
+                _, new_log_prob, entropy, new_value, _ = agent.get_action_and_value(b_obs[mb_inds], mb_states, b_actions.long()[mb_inds])
                 
                 # Ratio of the probablity of the new policy vs the old policy for taking provided action
                 # This is a key component in the PPO equation
@@ -373,4 +416,4 @@ if __name__ == "__main__":
     print(f'Final training time: {datetime.timedelta(seconds=time.time() - start_time)}')
     envs.close()
     writer.close()
-    torch.save(agent.state_dict(), f'./src/ppo/lnn/cartpole/models/double_lnn_agent.pt')
+    torch.save(agent.state_dict(), f'./src/ppo/lnn/cartpole/models/lnn_agent.pt')

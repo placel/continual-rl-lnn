@@ -1,0 +1,9 @@
+# Ignore Python bytecode
+__pycache__/
+
+# Ignore all __pycache__ folders anywhere
+**/__pycache__/
+
+# Ignore all 'runs' folders (e.g., TensorBoard logs)
+runs/
+**/runs/
