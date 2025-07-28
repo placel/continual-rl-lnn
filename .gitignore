@@ -7,3 +7,7 @@ __pycache__/
 # Ignore all 'runs' folders (e.g., TensorBoard logs)
 runs/
 **/runs/
+
+# Ignore all models for now as well
+models/
+**/models/

@@ -15,6 +15,7 @@ import torch.optim as optim
 import tyro
 import datetime
 import CfCVariations as lnn_models
+from collections import deque
 
 # Import the Closed-form Continuous model 
 # This is the liquid neural net we'll use
@@ -178,6 +179,12 @@ if __name__ == "__main__":
         '|param|value|\n|-|-|\n%s' % ('\n'.join([f'|{key}|{value}|' for key, value in vars(args).items()]))
     )
 
+    # Start with 100 for now, may increase later for higher accuracy
+    # This will store the rewards of the last x environments
+    # Using this, we may determine if we want to stop training early
+    # and move onto the next curriculum task, saving time and energy
+    reward_buffer = deque(maxlen=100)  
+
     # Try not to modify
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -279,8 +286,23 @@ if __name__ == "__main__":
                         print(f"global_step={global_step}, env={i}, episodic_return={infos['episode']['r'][i]}", flush=True)
                         writer.add_scalar("charts/episodic_return", infos['episode']['r'][i], global_step)
                         writer.add_scalar("charts/episodic_length", infos['episode']['l'][i], global_step)
+                        
+                        # Append the latest environment reward to the reward_buffer for early stopping criteria
+                        reward_buffer.append(infos['episode']['r'][i])
 
-
+        # Check the reward_buffer to see if the model should stop training early
+            # If the model is already performing well, we don't want to train on the current rollout
+            # so we break out of the current rollout and move onto next environment
+            if len(reward_buffer) >= 100:
+                mean = np.mean(reward_buffer)
+                std = np.std(reward_buffer)
+                if mean >= 0.95 and std <= 0.05:
+                    print('Early stopping triggered...')
+                    print('Moving onto next environment in curriculum...')
+                    # Empty the reward buffer to prevent cross-usage between environments.
+                    # Some harder environments don't 
+                    reward_buffer.clear()
+                    break
         
         # Calculate advantages for future usage in algorithm 
         with torch.no_grad():

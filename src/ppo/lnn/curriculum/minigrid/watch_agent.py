@@ -6,6 +6,7 @@ import numpy as np
 from torch.distributions import Categorical
 import CfCVariations as models
 
+# Need to store model arguments so I can load the model without needing to copy over settings
 class Agent(nn.Module):
     def __init__(self, action_shape, hidden_size=128):
         super().__init__()
@@ -14,17 +15,17 @@ class Agent(nn.Module):
         self.action_shape = action_shape
         # Can add MaxPooling later
         self.critic = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=(3, 3)),
+            nn.Conv2d(3, 32, kernel_size=(3, 3)),
             # nn.BatchNorm2d(16),
             nn.ReLU(),
-            nn.Conv2d(16, 32, kernel_size=(3, 3)),
+            nn.Conv2d(32, 64, kernel_size=(3, 3)),
             # nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.Flatten(),
             # layer_init(nn.LazyLinear(64)), # Automatically infer the size of flattened tensor
-            nn.LazyLinear(64), # Automatically infer the size of flattened tensor
+            nn.LazyLinear(128), # Automatically infer the size of flattened tensor
             nn.ReLU(),
-            nn.Linear(64, 1) # Output of 1 for as it's a value 
+            nn.Linear(128, 1) # Output of 1 for as it's a value 
         )
 
         # Create critic model, only pass obs_space as action_space isn't needed in a critic model
@@ -59,21 +60,21 @@ device = torch.device(
 print(f'Using {device}')
 
 # Create the CartPole environment
-env = gym.make('MiniGrid-LavaGapS5-v0', render_mode='human')
+env = gym.make('MiniGrid-FourRooms-v0', render_mode='human')
 
 n_actions = env.action_space.n
 state, _ = env.reset()
 
 # Create the Agent
 agent = Agent(n_actions, hidden_size=128)
-agent.load_state_dict(torch.load('./src/ppo/lnn/minigrid/models/lava-gap.pt'))
+agent.load_state_dict(torch.load('./src/ppo/lnn/curriculum/minigrid/models/MiniGrid-FourRooms-v0_model-0_24.pt.pt'))
 agent.to(device)
 
 # Initialize the states for LNN prediction
 batch_size = 1
 # Make sure it's the same as the hidden_state size of the model trained on
 # Ran into an error where hidden_dim was used instead, but it was a mismatch, leading to massive errors
-hidden_state_size = 64 
+hidden_state_size = 128
 h = torch.zeros(batch_size, hidden_state_size).to(device)
 c = torch.zeros(batch_size, hidden_state_size).to(device)
 actor_states = [h, c]
@@ -82,10 +83,11 @@ done = False
 import datetime
 import time
 start_time = time.time()
+# print(f"Mission: {state['mission']}")
 while not done:
     env.render()
 
-    # time.sleep(2)
+    time.sleep(1)
     # Permute the image to be (channels, height, width), then unsqueeze(0) to add batch of 1 to get (batch_size, channels, height, width)
     state_tensor = torch.tensor(state['image'], dtype=torch.float32, device=device).permute(2, 0, 1).unsqueeze(0)
     
@@ -94,11 +96,13 @@ while not done:
         # INference the model and get the action
         # stochastic = False for argmax performance
         action, _, _, _, actor_states = agent.get_action_and_value(state_tensor, actor_states, stochastic=False)
-        print(f'Action: {action}')
 
     action = action.cpu().numpy()[0]
     state, reward, terminated, truncated, _ = env.step(action)
+
     done = terminated or truncated
-    
+    if done:
+        print(f'Reward: {round(reward, 2)}')
+
 print(f'Final training time: {datetime.timedelta(seconds=time.time() - start_time)}')
 env.close() 

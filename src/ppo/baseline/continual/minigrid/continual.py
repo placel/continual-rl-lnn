@@ -25,6 +25,13 @@ from ncps.torch import CfC
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
+import sys
+import os
+# Needed to import utils
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../")))
+
+from utils import evaluation
+
 @dataclass
 class Args:
     # Experiment Name
@@ -47,16 +54,18 @@ class Args:
     # Name of the environment
     env_id: str = 'MiniGrid-DoorKey-5x5-v0'
     # Total timesteps allowed in the whole experiment
-    # total_timesteps: int = 500_000
-    total_timesteps: int = 2_500_000
+    total_timesteps: int = 500_000
+    # total_timesteps: int = 1_000_000
     # # Learning rate for the optimizer
-    # learning_rate: float = 2.5e-4
+    learning_rate: float = 2.5e-4
+    # learning_rate: float = 0.001
     # Learning rate for the optimizer
-    learning_rate: float = 1e-4 # Better for CfC models
+    # learning_rate: float = 1e-4 # Better for CfC models
     # Number of environments for parallel game processing
     num_envs: int = 4
     # Total number of steps to run in each environment per policy rollout
     num_steps: int = 128
+    # num_steps: int = 256
     # Size of the LNN hidden state
     hidden_state_size: int = 128
     #Toggles annealing for policy and value networks
@@ -72,11 +81,12 @@ class Args:
     # Toggle advantages normalization
     norm_adv: bool = True
     # Clip epsilon
+    # clip_coef: float = 0.2
     clip_coef: float = 0.2
     # Toggles usage of clipped loss for the value function
     clip_vloss: bool = True
     # coefficient of the entropy (encourages exploration)
-    ent_coef: float = 0.2 # Changed from 0.01 for testing
+    ent_coef: float = 0.01 # Changed from 0.01 for testing
     # Coefficient of the value function
     vf_coef: float = 0.5
     # Maximum norm for gradient clipping
@@ -109,34 +119,31 @@ def make_env(env_id, idx, capture_video, run_name):
     return thunk
 
 # Create the environments for parallelization
-# passing in the env_name allows us to repeat this for each environment within the curriculum 
+# passing in the env_name allows us to repeat this for each environment within the sequence 
 def create_sync_envs(env_name):
     return gym.vector.SyncVectorEnv(
         [make_env(env_name, i, args.capture_video, run_name) for i in range(args.num_envs)]
     )
 
-# Custom layer weight initialization
-# Orthogonal weight setting ensures no neurons have any sort of correlation
-# This is particularly important in reinforcement learning whent he dataset is small
-# and exploration is required. Any inherent correlation could influence the results
-# We also set all biases to 0
-def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-    torch.nn.init.orthogonal_(layer.weight, std)
-    torch.nn.init.constant_(layer.bias, bias_const)
-    return layer
-
 # This is called at the end of an environment, whether triggered by early stopping or naturally
 # Just saves the model, and prints a message 
-def end_environment(reward_buffer, curriculum_start_time):
-    print(f'Curriculum training time: {datetime.timedelta(seconds=time.time() - curriculum_start_time)}')
+def end_environment(cur_task_indx):
+    print(f'Environment training time: {datetime.timedelta(seconds=time.time() - sequence_start_time)}')
+
+    # Calculate average reward per environment
+    rewards = evaluation.mean_reward(agent, sequence)
+    # Assign rewards to the current task index
+    perf_matrix[cur_task_indx] = rewards
+
     # Save the current version of the model for testing while curriculum continues (and reloding from previous point)
     mean_reward = round(np.mean(reward_buffer), 2)
-    filename = f'{curriculum_env}_R-{round(mean_reward, 2)}'.replace('.', '_') + '.pt'
-    torch.save(agent.state_dict(), f'./src/ppo/lnn/curriculum/minigrid/models/{filename}')
+    filename = f'{cur_env}_R-{round(mean_reward, 2)}'.replace('.', '_') + '.pt'
+    torch.save(agent.state_dict(), f'./src/ppo/baseline/continual/minigrid/models/{filename}')
 
     # Empty the reward buffer to prevent cross-usage between environments.
     # Some harder environments don't 
     reward_buffer.clear()
+    x = cur_task_indx
 
 # Check the reward_buffer to see if the model should stop training early
 # If the model is already performing well, we don't want to train on the current rollout
@@ -154,74 +161,6 @@ def early_stopping(reward_buffer):
     
     # Otherwise return False to prevent early_stopping
     return False
-
-# Extracted from MiniGrid GitHub envs. Needs to be hardcoded as there's no way to get all words used in MiniGrid from one location
-# Each Mission has syntax ('get a', 'fetch a', etc.), a colour, and an object ('key', 'ball', etc.)
-# Any updates or if incorporating BabyAI will need this list to change first to ensure the vocab is consistent across envs
-# In case updates are needed, find the new words and give the list to a chatbot to provide a unique list of words instead of doing it manually
-unique_words = [
-    'get', 'a', 'go', 'fetch', 'you', 'must', 'to', 'the', 'matching',
-    'object', 'at', 'end', 'of', 'hallway', 'traverse', 'rooms', 'goal',
-    'put', 'near', 'and', 'open', 'red', 'door', 'then', 'blue', 'pick',
-    'up', 'green', 'grey', 'purple', 'yellow', 'box', 'key', 'ball', 'square',
-    'use'
-]
-# Convert the words into a dict for easy tokenization 
-word_dict = {}
-for word in unique_words:
-    if word not in word_dict:
-        word_dict[word] = len(word_dict)
-
-# A batch of tuples is passed. Extract the batch size, perform mission processing, then convert back into original batch
-def process_mission(mission, max_mission_length=9):
-
-    batch_size = len(mission)
-
-    # Split the mission by space into a list of individual words
-    words = mission[0].lower().split()
-
-    # Apply max_mission_length. I doubt any mission is greater than 9, but we'll see
-    if len(words) > max_mission_length:
-        words = words[:max_mission_length]
-
-    # Convert words into a list of tokens for model processing
-    tokens = [word_dict[word] for word in words]
-
-    # Apply padding if needed. If tokens is less than max_mission_length
-    if len(tokens) < max_mission_length:
-        tokens += [0] * (max_mission_length - len(tokens)) # Just append a 0 (max_mission_length - len(tokens)) amount of times
-
-    # Rebuild the list back into batch_size x tokens
-    tokens = [tokens for _ in range(batch_size)]
-    tokens = torch.tensor(tokens).to(device)
-
-    return tokens
-
-class Agent(nn.Module):
-    def __init__(self, envs, vocab_size, hidden_dim=128, word_embedding_dim=32, text_embedding_dim=128):
-        super().__init__()
-
-        # Create the critic model with the same variables as the CfC
-        self.critic = models.CriticBaseline(vocab_size, hidden_dim, word_embedding_dim, text_embedding_dim)
-
-        # Extract the action space of the environment
-        action_space = np.array(envs.single_action_space).prod()
-
-        # Create the actor model. Pass in the envs which will adapt depending on the tasks at hand
-        self.actor = models.ActorCfC(action_space.n, vocab_size, hidden_dim, word_embedding_dim, text_embedding_dim)
-
-    def get_value(self, x, mission):
-        return self.critic(x, mission)
-    
-    def get_action_and_value(self, x, actor_states, mission_tokens, action=None):
-        # Pass the image, states, and mission to the model to get an action
-        logits, new_actor_states = self.actor(x, actor_states, mission_tokens)
-        probs = Categorical(logits=logits)
-        
-        if action is None:
-            action = probs.sample()
-
-        return action, probs.log_prob(action), probs.entropy(), self.critic(x, mission_tokens), new_actor_states
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -247,7 +186,7 @@ if __name__ == "__main__":
         )
     
     # Setup logging 
-    writer = SummaryWriter(f'./src/ppo/lnn/curriculum/minigrid/runs/{run_name}')
+    writer = SummaryWriter(f'./src/ppo/baseline/continual/minigrid/runs/{run_name}')
     writer.add_text(
         'hyperparameters',
         '|param|value|\n|-|-|\n%s' % ('\n'.join([f'|{key}|{value}|' for key, value in vars(args).items()]))
@@ -256,15 +195,15 @@ if __name__ == "__main__":
     # Store a list of all the names of the curriculum tasks 
     # The model will sequentially be trained on these tasks to aquire new skills
     # Start simple for now
-    curriculum = [
-        # 'MiniGrid-Empty-5x5-v0',
-        # 'MiniGrid-Empty-Random-5x5-v0',
-        # 'MiniGrid-DoorKey-5x5-v0',
+    sequence = [
+        'MiniGrid-Empty-5x5-v0',
+        'MiniGrid-Empty-Random-5x5-v0',
+        'MiniGrid-LavaGapS5-v0',
+        'MiniGrid-DoorKey-5x5-v0',
+        'MiniGrid-Dynamic-Obstacles-5x5-v0'
         # 'MiniGrid-MultiRoom-N2-S4-v0',
-        # 'MiniGrid-FourRooms-v0',
-        # 'MiniGrid-Unlock-v0',
-        'MiniGrid-Fetch-5x5-N2-v0'
         # 'MiniGrid-KeyCorridorS3R1-v0',
+        # 'MiniGrid-Unlock-v0',
         # 'MiniGrid-DistShift1-v0', # Needs to be tested on DistShift2 for generalization
         # 'MiniGrid-LavaGapS7-v0', 
     ]        
@@ -293,24 +232,36 @@ if __name__ == "__main__":
     # so this running this on-demand doesn't cause any shape issues. Environments with larger image inputs can be 
     # shrunk to fit the standard, or vice versa
     # ** 
-    envs = create_sync_envs(curriculum[0])
+    envs = create_sync_envs(sequence[0])
 
     # Confirm the action space is Discrete (left, right, etc.), no Continuous 
     assert isinstance(envs.single_action_space, gym.spaces.Discrete) # Only disscrete action space is supported here
 
     # Create the agent
     # initialize the outputs (actions to take)
-    agent = Agent(envs, vocab_size=len(word_dict), hidden_dim=128, word_embedding_dim=32, text_embedding_dim=128).to(device)
+    # vocab length + 2 to incorporate PAD and UKN tokens
+    config = {
+        'action_space': envs.single_action_space.n,
+        'hidden_dim': 128,
+        'actor_cfc': False,
+        'critic_cfc': False
+    }
+    agent = models.Agent(config).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+
+    # Collect baseline model performance (performance with no training)
+    # This is needed to compute Forward Transfer
+    # Returns mean reward for each task
+    baselines = []
+    print('Collecting random baselines...')
+    baselines = evaluation.mean_reward(agent, sequence)
+
 
     # Alogirthm Logic
     #Storage
     # Reshape the observation space to match the shape of the image (3, 7, 7) 
     image_shape = envs.single_observation_space['image'].shape
     permuted_image = (image_shape[2], image_shape[0], image_shape[1])
-
-    # Max token length of each mission
-    max_mission_length = 9
 
     # Keep track of these per rollout. Ex. store only num_steps(128) rows with num_envs(4) columns for values
     # These will reset after every rollout. Each rollout has num_steps(128) collection points
@@ -321,9 +272,6 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    actor_h_states = torch.zeros((args.num_steps, args.num_envs, args.hidden_state_size)).to(device)
-    actor_c_states = torch.zeros((args.num_steps, args.num_envs, args.hidden_state_size)).to(device)
-    mission_tokens = torch.zeros((args.num_steps, args.num_envs, max_mission_length), dtype=torch.int).to(device)
 
     # Try not to modify
     # Start game
@@ -332,32 +280,28 @@ if __name__ == "__main__":
     # Track total time of training
     master_start_time = time.time()
     es_triggered = False
+    # Keep track of average rewards per task 
+    perf_matrix = np.zeros((len(sequence), len(sequence)))
     # Iterate over each environment within the curriculum and train the model
-    for indx, curriculum_env in enumerate(curriculum):
-        print(f'Current curriculum environment: {curriculum_env}')
+    for indx, cur_env in enumerate(sequence):
+        print(f'Current environment: {cur_env}')
+        print(f'Performance Matrix: {perf_matrix}')
 
-        # Keep track of how long each curriculum lasts, it should get longer with each
-        curriculum_start_time = time.time()
-
-        # The model stuggles with FourRooms; increase total timestep and exploration (entropy) for it alone
-        if 'FourRooms' in curriculum_env:
-            args.total_timesteps = 750_000
-            args.ent_coef = 0.25
-        else:
-            args.total_timesteps = 500_000
-            args.ent_coef = 0.1
+        # Keep track of how long each env lasts, it should get longer with each
+        sequence_start_time = time.time()
 
         # The first batch is created before this loop. If not the first batch, 
         # create the next batch of environments associated with the current curriculum environment
         if indx > 0:
             # Call the function to make envs for new curriculum
-            envs = create_sync_envs(env_name=curriculum_env)
+            envs = create_sync_envs(env_name=cur_env)
 
         # Reset the environment (initialize for new envs)
         next_obs, _ = envs.reset(seed=args.seed)
 
         # Permutate the observations to be (batch_size=4 (envs), channels=3, height, width)
-        next_obs['image'] = torch.tensor(next_obs['image'], dtype=torch.float32, device=device).permute(0, 3, 1, 2)
+        # Also, normalize the image to help the CNN layers
+        next_obs['image'] = (torch.tensor(next_obs['image'], dtype=torch.float32, device=device).permute(0, 3, 1, 2) / 255.0)
         next_done = torch.zeros(args.num_envs).to(device)
 
         # Iterate over a rollout
@@ -369,29 +313,11 @@ if __name__ == "__main__":
                 lrnow = frac * args.learning_rate
                 optimizer.param_groups[0]['lr'] = lrnow
 
-            # Initialize hidden states to 0 at the start of each episode
-            actor_states = [
-                torch.zeros((args.num_envs, args.hidden_state_size)).to(device),
-                torch.zeros((args.num_envs, args.hidden_state_size)).to(device)
-            ]
-
-            # Pass the mission of the current environment to be tokenized for the embedding layer
-            tokenized_mission = process_mission(next_obs['mission'], max_mission_length)
-
             # Perform a collection of states in batches of usually 128
             for step in range(0, args.num_steps):
                 global_step += args.num_envs # account for each step in every env
                 obs[step] = next_obs['image']
                 dones[step] = next_done
-
-                # Pass the mission of the current episode to be tokenized for the embedding layer
-                # mission_tokens[step] = process_mission(next_obs['mission'], max_mission_length)
-                mission_tokens[step] = tokenized_mission
-
-                # Store the current steps states for later retrieval during update training
-                # Intialized to zero but update over time
-                actor_h_states[step] = actor_states[0]
-                actor_c_states[step] = actor_states[1]
 
                 # Algorithm logic: action logic
                 # During the collection of data, we pass the state to the model
@@ -399,13 +325,7 @@ if __name__ == "__main__":
                 # Learning occurs after data is collected and epochs are run
                 with torch.no_grad():
                     # Get the action the actor takes. And get the value the critic assigns said action
-                    action, logprob, _, value, new_actor_states = agent.get_action_and_value(next_obs['image'], actor_states, tokenized_mission)
-                    
-                    # Update the actor_states with new states, resetting hidden states where the next_state is terminal
-                    for i in range(len(actor_states)):
-                        new_actor_states[i] = new_actor_states[i] * (1.0 - next_done.unsqueeze(1))
-                    
-                    actor_states = new_actor_states
+                    action, logprob, _, value = agent.get_action_and_value(next_obs['image'])
 
                     values[step] = value.flatten()
                 actions[step] = action
@@ -417,7 +337,8 @@ if __name__ == "__main__":
                 rewards[step] = torch.tensor(reward).to(device)
 
                 # Once again we need to extract the image from the obs and permute for processing
-                next_obs['image'] = torch.tensor(next_obs['image'], dtype=torch.float32, device=device).permute(0, 3, 1, 2)
+                # Normalize it too
+                next_obs['image'] = (torch.tensor(next_obs['image'], dtype=torch.float32, device=device).permute(0, 3, 1, 2) / 255.0)
                 next_done = torch.Tensor(next_done).to(device)
 
                 # Log the rewards after each episode of every environment ends
@@ -431,17 +352,17 @@ if __name__ == "__main__":
                             # Append the latest environment reward to the reward_buffer for early stopping criteria
                             reward_buffer.append(infos['episode']['r'][i])
             
-            # Check if early stopping should kick-in
+            # EARLY STOPPING
             es_triggered = early_stopping(reward_buffer)
             if es_triggered:
                 # Process the end of the environment
-                end_environment(reward_buffer, curriculum_start_time)
+                end_environment(indx)
                 break
 
             # Calculate advantages for future usage in algorithm 
             with torch.no_grad():
                 # Get the critics thoughts on the value of the next state (for all envs)
-                next_value = agent.get_value(next_obs['image'], process_mission(next_obs['mission'])).reshape(1, -1)
+                next_value = agent.get_value(next_obs['image']).reshape(1, -1)
 
                 # allocate space
                 advantages = torch.zeros_like(rewards).to(device)
@@ -488,9 +409,6 @@ if __name__ == "__main__":
             b_advantages = advantages.reshape(-1)
             b_returns = returns.reshape(-1)
             b_values = values.reshape(-1)
-            b_h_states = actor_h_states.reshape(-1, args.hidden_state_size)
-            b_c_states = actor_c_states.reshape(-1, args.hidden_state_size)
-            b_mission_tokens = mission_tokens.reshape(-1, max_mission_length)
 
             # print(b_mission_tokens.shape)
             # print(f'OBS: {b_obs.shape}')
@@ -509,16 +427,9 @@ if __name__ == "__main__":
                     end = start + args.minibatch_size
                     mb_inds = b_inds[start:end]
 
-                    # Extract states for this mini-batch
-                    # and pass to model as one array
-                    mb_states = [
-                        b_h_states[mb_inds],
-                        b_c_states[mb_inds]
-                    ]
-                    
                     # print(f'MB Tokens: ', b_mission_tokens[mb_inds])
                     # Forward pass (with grad) the minibatch through to the model to get values associated with the provided action
-                    _, new_log_prob, entropy, new_value, _ = agent.get_action_and_value(b_obs[mb_inds], mb_states, b_mission_tokens[mb_inds], b_actions.long()[mb_inds])
+                    _, new_log_prob, entropy, new_value = agent.get_action_and_value(b_obs[mb_inds], action=b_actions.long()[mb_inds])
                     
                     # Ratio of the probablity of the new policy vs the old policy for taking provided action
                     # This is a key component in the PPO equation
@@ -598,12 +509,21 @@ if __name__ == "__main__":
        
         # Save the current version of the model for testing while curriculum continues (and reloding from previous point)
         if not es_triggered:
-            end_environment(reward_buffer, curriculum_start_time)
+            end_environment(indx)
         
         # Reset early stopping flag for next env
         es_triggered = False
+    
+    print('Computing Metrics...')
+    fwt = evaluation.compute_fwt(perf_matrix, baselines)
+    bwt = evaluation.compute_bwt(perf_matrix)
+    # Take the mean of all averaged rewards to get a singular average
+    mean_reward = np.mean(evaluation.mean_reward(agent, sequence))
+
+    evaluation.plot_perf_matrix(perf_matrix, save_path=f'{os.path.dirname(__file__)}/metrics/performance_matrix.png')
+    evaluation.plot_metrics(fwt, bwt, mean_reward, save_path=f'{os.path.dirname(__file__)}/metrics/metrics.png')
 
     print(f'Final training time: {datetime.timedelta(seconds=time.time() - master_start_time)}')
     envs.close()
     writer.close()
-    torch.save(agent.state_dict(), f'./src/ppo/lnn/curriculum/minigrid/models/final_curriculum_model.pt')
+    torch.save(agent.state_dict(), f'./src/ppo/baseline/continual/minigrid/models/final_model.pt')
