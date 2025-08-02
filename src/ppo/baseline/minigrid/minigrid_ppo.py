@@ -44,7 +44,7 @@ class Args:
 
     # ALGORITHM ARGS
     # Name of the environment
-    env_id: str = 'MiniGrid-DoorKey-5x5-v0'
+    env_id: str = 'MiniGrid-Empty-5x5-v0'
     # Total timesteps allowed in the whole experiment
     total_timesteps: int = 500_000
     # # Learning rate for the optimizer

@@ -4,8 +4,7 @@ import time
 from dataclasses import dataclass
 # https://ncps.readthedocs.io/en/latest/examples/atari_ppo.html
 import gymnasium as gym
-import minigrid
-# import minigrid.envs
+import minigrid # Import needed for MiniGrid environments to run
 import numpy as np
 import torch
 import torch.backends
@@ -15,13 +14,6 @@ import torch.optim as optim
 import tyro
 import datetime
 from collections import deque # used for buffer determining early stopping
-
-# Import the Closed-form Continuous model 
-# This is the liquid neural net we'll use
-# Only use the Fully Connected wirings firs as it's the most conceptually similar
-from ncps.torch import CfC
-
-from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
 import sys
@@ -53,23 +45,29 @@ class Args:
 
     # ALGORITHM ARGS
     # Name of the environment
-    env_id: str = 'MiniGrid-DoorKey-5x5-v0'
+    env_id: str = 'MiniGrid-Empty-5x5-v0'
     # Total timesteps allowed in the whole experiment
     total_timesteps: int = 500_000
+    # Choose if the model should utilize CfC for Actor and Critic Head
+    # If both are false, the Baseline model will be used
+    cfc_actor: bool = False
+    cfc_critic: bool = False
     # total_timesteps: int = 1_000_000
     # # Learning rate for the optimizer
-    learning_rate: float = 5e-4
+    # learning_rate: float = 2.5e-4
     # learning_rate: float = 0.001
     # Learning rate for the optimizer
+    learning_rate: float = 1.5e-4 # Better for CfC models
     # Number of environments for parallel game processing
     num_envs: int = 4
     # Total number of steps to run in each environment per policy rollout
     num_steps: int = 128
     # num_steps: int = 256
     # Size of the LNN hidden state
-    hidden_state_size: int = 128
+    hidden_state_size: int = 64
     #Toggles annealing for policy and value networks
-    anneal_lr: bool = True
+    # anneal_lr: bool = True
+    anneal_lr: bool = False
     # Gamma value
     gamma: float = 0.99
     # Lambda value for the General Advantage Estimation
@@ -86,14 +84,14 @@ class Args:
     # Toggles usage of clipped loss for the value function
     clip_vloss: bool = True
     # coefficient of the entropy (encourages exploration)
-    ent_coef: float = 0.01 # Changed from 0.01 for testing
+    ent_coef: float = 0.1 # Changed from 0.01 for testing
     # Coefficient of the value function
     vf_coef: float = 0.5
     # Maximum norm for gradient clipping
     max_grad_norm: float = 0.5
     # Target KL divergence threshol (don't know what this is)
     target_kl: float = None
-    # Toggle early stopping (don't)
+    # Toggle early stopping  
     es_flag: bool = True
 
     # TO be filled in runtime
@@ -131,8 +129,8 @@ def end_environment(cur_task_indx):
     # Assign rewards to the current task index
     perf_matrix[cur_task_indx] = rewards
 
-    # Save the current version of the model for testing while curriculum continues (and reloding from previous point)
-    torch.save(agent.state_dict(), f'./src/ppo/baseline/continual/minigrid/models/{sequence[cur_task_indx]}.pt')
+    # Save this version of the model (in case of crashes later on)
+    torch.save(agent.state_dict(), f'{os.path.dirname(__file__)}/models/{sequence[cur_task_indx]}.pt')
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -158,7 +156,7 @@ if __name__ == "__main__":
         )
     
     # Setup logging 
-    writer = SummaryWriter(f'./src/ppo/baseline/continual/minigrid/runs/{run_name}')
+    writer = SummaryWriter(f'{os.path.dirname(__file__)}/runs/{run_name}')
     writer.add_text(
         'hyperparameters',
         '|param|value|\n|-|-|\n%s' % ('\n'.join([f'|{key}|{value}|' for key, value in vars(args).items()]))
@@ -178,25 +176,25 @@ if __name__ == "__main__":
     #     # 'MiniGrid-KeyCorridorS3R1-v0',
     #     # 'MiniGrid-DistShift1-v0', # Needs to be tested on DistShift2 for generalization
     #     # 'MiniGrid-LavaGapS7-v0', 
-    # ]       
+    # ]        
 
     sequence = [
-        # 'MiniGrid-Empty-5x5-v0',
+        'MiniGrid-Empty-5x5-v0'
         # 'MiniGrid-Empty-8x8-v0',
         # 'MiniGrid-Empty-16x16-v0',
         # 'MiniGrid-FourRooms-v0'
         # 'MiniGrid-Unlock-v0',
-        'MiniGrid-KeyCorridorS3R1-v0'
+        # 'MiniGrid-KeyCorridorS3R1-v0'
         # 'MiniGrid-DoorKey-5x5-v0'
     ]           
 
     sequence_patience = [
-        # 5,
+        5
         # 5,
         # 6,
-        12
+        # 12
         # 15
-    ]                            
+    ]                             
 
     # Initialize all seeds to be the same
     # Try not to modify
@@ -207,7 +205,7 @@ if __name__ == "__main__":
 
     # Assign to GPU (or CPU if not connected)
     device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
-    print(device)
+    print(f'Device: {device}')
 
     # Create the first batch of environments with the first environment listed in the curriculum
     # This passes 'MiniGrid-Empty-5x5-v0' to the function, returning 4 environments synced to be able to run parallel
@@ -224,11 +222,12 @@ if __name__ == "__main__":
     # Create the agent
     # initialize the outputs (actions to take)
     # vocab length + 2 to incorporate PAD and UKN tokens
+    hidden_dim = 64
     config = {
         'action_space': envs.single_action_space.n,
-        'hidden_dim': 64,
-        'actor_cfc': False,
-        'critic_cfc': False
+        'hidden_dim': hidden_dim,
+        'actor_cfc': args.cfc_actor,
+        'critic_cfc': args.cfc_critic
     }
     agent = models.Agent(config).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
@@ -239,7 +238,6 @@ if __name__ == "__main__":
     baselines = []
     print('Collecting random baselines...')
     # baselines = evaluation.mean_reward(agent, sequence)
-
 
     # Alogirthm Logic
     #Storage
@@ -256,6 +254,7 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    actor_h_state = torch.zeros((args.num_steps, args.num_envs, args.hidden_state_size)).to(device)
 
     # Try not to modify
     # Start game
@@ -273,7 +272,7 @@ if __name__ == "__main__":
 
         # Keep track of how long each env lasts, it should get longer with each
         sequence_start_time = time.time()
-
+        
         # initialize the EarlyStopping class at start of every episode to ensure no overlap between task performance
         es_monitor = EarlyStopping(patience=sequence_patience[indx], min_delta=0.01, mode='max', verbose=True, restore_weights_flag=True) 
 
@@ -290,7 +289,6 @@ if __name__ == "__main__":
         # Also, normalize the image to help the CNN layers
         next_obs['image'] = (torch.tensor(next_obs['image'], dtype=torch.float32, device=device).permute(0, 3, 1, 2) / 255.0)
         next_done = torch.zeros(args.num_envs).to(device)
-
         # Iterate over a rollout
         for iteration in range(1, args.num_iterations + 1):
             # 'Anneal' the learning rate if enabled
@@ -300,11 +298,18 @@ if __name__ == "__main__":
                 lrnow = frac * args.learning_rate
                 optimizer.param_groups[0]['lr'] = lrnow
 
+            # Initialize hidden states to 0 at the start of each episode
+            actor_state = torch.Tensor(torch.zeros((args.num_envs, args.hidden_state_size)).to(device))
+
             # Perform a collection of states in batches of usually 128
             for step in range(0, args.num_steps):
                 global_step += args.num_envs # account for each step in every env
                 obs[step] = next_obs['image']
                 dones[step] = next_done
+
+                # Store the current steps states for later retrieval during update training
+                # Intialized to zero but update over time
+                actor_h_state[step] = actor_state[0]
 
                 # Algorithm logic: action logic
                 # During the collection of data, we pass the state to the model
@@ -312,7 +317,11 @@ if __name__ == "__main__":
                 # Learning occurs after data is collected and epochs are run
                 with torch.no_grad():
                     # Get the action the actor takes. And get the value the critic assigns said action
-                    action, logprob, _, value, _, _ = agent.get_action_and_value(next_obs['image'])
+                    action, logprob, _, value, new_actor_state = agent.get_action_and_value(next_obs['image'], actor_state)
+
+                    # Update the actor_states with new states, resetting hidden states where the next_state is terminal
+                    new_actor_state = new_actor_state * (1.0 - next_done.unsqueeze(1))
+                    actor_state = new_actor_state
 
                     values[step] = value.flatten()
                 actions[step] = action
@@ -335,7 +344,7 @@ if __name__ == "__main__":
                             print(f"global_step={global_step}, env={i}, episodic_return={infos['episode']['r'][i]}", flush=True)
                             writer.add_scalar("charts/episodic_return", infos['episode']['r'][i], global_step)
                             writer.add_scalar("charts/episodic_length", infos['episode']['l'][i], global_step)
-            
+
             # Calculate advantages for future usage in algorithm 
             with torch.no_grad():
                 # Get the critics thoughts on the value of the next state (for all envs)
@@ -386,6 +395,7 @@ if __name__ == "__main__":
             b_advantages = advantages.reshape(-1)
             b_returns = returns.reshape(-1)
             b_values = values.reshape(-1)
+            b_h_states = actor_h_state.reshape(-1, args.hidden_state_size)
 
             # print(b_mission_tokens.shape)
             # print(f'OBS: {b_obs.shape}')
@@ -404,9 +414,13 @@ if __name__ == "__main__":
                     end = start + args.minibatch_size
                     mb_inds = b_inds[start:end]
 
+                    # Extract states for this mini-batch
+                    # and pass to model as one array
+                    mb_states = torch.Tensor(b_h_states[mb_inds])
+
                     # print(f'MB Tokens: ', b_mission_tokens[mb_inds])
                     # Forward pass (with grad) the minibatch through to the model to get values associated with the provided action
-                    _, new_log_prob, entropy, new_value, _, _ = agent.get_action_and_value(b_obs[mb_inds], action=b_actions.long()[mb_inds])
+                    _, new_log_prob, entropy, new_value, _ = agent.get_action_and_value(b_obs[mb_inds], states=mb_states, action=b_actions.long()[mb_inds])
                     
                     # Ratio of the probablity of the new policy vs the old policy for taking provided action
                     # This is a key component in the PPO equation
@@ -483,7 +497,7 @@ if __name__ == "__main__":
             writer.add_scalar("losses/explained_variance", explained_var, global_step)
             print("SPS:", int(global_step / (time.time() - master_start_time)))
             writer.add_scalar("charts/SPS", int(global_step / (time.time() - master_start_time)), global_step)
-       
+            
             # EARLY STOPPING
             # If early stopping is enabled, check if model training on current task should end
             # Ensure the model trains for at least k iterations before checking if early stopping should trigger
@@ -493,6 +507,7 @@ if __name__ == "__main__":
                 # Evaluate the mode on the current environment to check if early stopping should trigger
                 es_mean = evaluation.mean_reward(agent=agent, envs=[cur_env], episodes=5) # Increase episodes for more reliable mean_reward
                 es_triggered = es_monitor.update(es_mean[0], model=agent)
+
                 if es_triggered:
                     es_monitor.restore_weights(agent)
                     end_environment(indx)
@@ -517,4 +532,4 @@ if __name__ == "__main__":
     print(f'Final training time: {datetime.timedelta(seconds=time.time() - master_start_time)}')
     envs.close()
     writer.close()
-    torch.save(agent.state_dict(), f'./src/ppo/baseline/continual/minigrid/models/final_model.pt')
+    torch.save(agent.state_dict(), f'{os.path.dirname(__file__)}/models/final_model.pt')

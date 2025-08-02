@@ -1,0 +1,25 @@
+LNN Actor & Critic:
+
+conda activate lnn_env
+cd Documents/School/Wales/MSc/continual-rl-lnn
+python ./src/continual/minigrid/continual.py --num-envs 4 --cfc-actor --cfc-critic --learning-rate 1e-4 --ent-coef 0.03
+
+Baseline:
+
+conda activate lnn_env
+cd Documents/School/Wales/MSc/continual-rl-lnn
+python ./src/continual/minigrid/continual.py --num-envs 4 --learning-rate 2.5e-4 --ent-coef 0.01
+
+
+Experiment with these later
+LNN Actor:
+
+conda activate lnn_env
+cd Documents/School/Wales/MSc/continual-rl-lnn
+python ./src/continual/minigrid/continual.py --num-envs 4 --cfc-actor --learning-rate 1e-4 --ent-coef 0.03
+
+LNN Critic:
+
+conda activate lnn_env
+cd Documents/School/Wales/MSc/continual-rl-lnn
+python ./src/continual/minigrid/continual.py --num-envs 4 --cfc-critic --learning-rate 1e-4 --ent-coef 0.03

@@ -5,11 +5,7 @@ import torch.functional as F
 import minigrid
 import numpy as np
 from torch.distributions import Categorical
-import os
-import sys
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../")))
-from utils import models
+import ModelVariations as models
 
 # Need to store model arguments so I can load the model without needing to copy over settings
 class Agent(nn.Module):
@@ -59,7 +55,7 @@ device = torch.device(
 print(f'Using {device}')
 
 # Create the CartPole environment
-env = gym.make('MiniGrid-DoorKey-5x5-v0', render_mode='human')
+env = gym.make('MiniGrid-Empty-5x5-v0', render_mode='human')
 
 n_actions = env.action_space.n
 state, _ = env.reset()
@@ -102,7 +98,7 @@ while not done:
     with torch.no_grad():
         # INference the model and get the action
         # stochastic = False for argmax performance
-        action, _, _, _, _ = agent.get_action_and_value(state_tensor, actor_states, deterministic=True)
+        action, _, _, _ = agent.get_action_and_value(state_tensor, actor_states, determinstic=True)
 
     action = action.cpu().numpy()[0]
     state, reward, terminated, truncated, _ = env.step(action)

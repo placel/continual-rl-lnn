@@ -1,0 +1,3 @@
+conda activate lnn_env
+cd Documents/School/Wales/MSc/continual-rl-lnn
+python ./src/ppo/lnn/continual/minigrid/continual.py --num-envs 4

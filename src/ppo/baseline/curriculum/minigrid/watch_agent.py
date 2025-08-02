@@ -51,7 +51,8 @@ device = torch.device(
 print(f'Using {device}')
 
 # Create the CartPole environment
-env = gym.make('MiniGrid-Fetch-5x5-N2-v0', render_mode='human')
+# env = gym.make('MiniGrid-Fetch-5x5-N2-v0', render_mode='human')
+env = gym.make('MiniGrid-Empty-Random-5x5-v0', render_mode='human')
 
 n_actions = env.action_space.n
 state, _ = env.reset()
@@ -105,8 +106,8 @@ def process_mission(missions, max_mission_length=12, device='cpu'):  # Increased
 
 
 # Create the Agent
-agent = models.Agent(n_actions, vocab_size=len(word_dict) +2, hidden_dim=256, word_embedding_dim=32, text_embedding_dim=128, actor_cfc=False, critic_cfc=False)
-agent.load_state_dict(torch.load('./src/ppo/baseline/curriculum/minigrid/models/MiniGrid-Fetch-5x5-N2-v0_R-0_45.pt'))
+agent = models.Agent(n_actions, vocab_size=len(word_dict) +2, hidden_dim=64, word_embedding_dim=32, text_embedding_dim=128, actor_cfc=False, critic_cfc=False)
+agent.load_state_dict(torch.load('./src/ppo/baseline/curriculum/minigrid/models/MiniGrid-Fetch-5x5-N2-v0_R-0_94.pt'))
 agent.to(device)
 
 # Initialize the states for LNN prediction
@@ -126,10 +127,10 @@ start_time = time.time()
 # print(f"Mission: {state['mission']}")
 while not done:
     env.render()
-
+    time.sleep(10)
     # time.sleep(1)
     # Permute the image to be (channels, height, width), then unsqueeze(0) to add batch of 1 to get (batch_size, channels, height, width)
-    state_tensor = torch.tensor(state['image'], dtype=torch.float32, device=device).permute(2, 0, 1).unsqueeze(0)
+    state_tensor = torch.tensor(np.array(state['image']), dtype=torch.float32, device=device).permute(2, 0, 1).unsqueeze(0)
     state_mission = process_mission(state['mission'], device=device)
     # Any pre-processing techniques need to be applied befor ewe use it
     with torch.no_grad():

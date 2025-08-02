@@ -50,14 +50,15 @@ class Args:
     # total_timesteps: int = 500_000
     total_timesteps: int = 1_000_000
     # # Learning rate for the optimizer
-    learning_rate: float = 2.5e-4
+    # learning_rate: float = 2.5e-4
+    learning_rate: float = 0.001
     # learning_rate: float = 0.001
     # Learning rate for the optimizer
     # learning_rate: float = 1e-4 # Better for CfC models
     # Number of environments for parallel game processing
     num_envs: int = 4
     # Total number of steps to run in each environment per policy rollout
-    num_steps: int = 256
+    num_steps: int = 128
     # num_steps: int = 256
     # Size of the LNN hidden state
     hidden_state_size: int = 128
@@ -79,7 +80,7 @@ class Args:
     # Toggles usage of clipped loss for the value function
     clip_vloss: bool = True
     # coefficient of the entropy (encourages exploration)
-    ent_coef: float = 0.1 # Changed from 0.01 for testing
+    ent_coef: float = 0.03 # Changed from 0.01 for testing
     # Coefficient of the value function
     vf_coef: float = 0.5
     # Maximum norm for gradient clipping
@@ -333,7 +334,7 @@ if __name__ == "__main__":
     # Create the agent
     # initialize the outputs (actions to take)
     # vocab length + 2 to incorporate PAD and UKN tokens
-    agent = models.Agent(envs.single_action_space.n, vocab_size=len(word_dict) +2, hidden_dim=256, word_embedding_dim=32, text_embedding_dim=128, actor_cfc=False, critic_cfc=False).to(device)
+    agent = models.Agent(envs.single_action_space.n, vocab_size=len(word_dict) +2, hidden_dim=64, word_embedding_dim=32, text_embedding_dim=128, actor_cfc=False, critic_cfc=False).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # Alogirthm Logic
@@ -390,7 +391,8 @@ if __name__ == "__main__":
         # Permutate the observations to be (batch_size=4 (envs), channels=3, height, width)
         # Also, normalize the image to help the CNN layers
         next_obs['image'] = (
-            torch.tensor(next_obs['image'], dtype=torch.float32, device=device).permute(0, 3, 1, 2) / 255.0
+            # torch.tensor(next_obs['image'], dtype=torch.float32, device=device).permute(0, 3, 1, 2) / 255.0
+            torch.tensor(np.array(next_obs['image']), dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         )
         next_done = torch.zeros(args.num_envs).to(device)
 
@@ -433,7 +435,8 @@ if __name__ == "__main__":
 
                 # Once again we need to extract the image from the obs and permute for processing
                 next_obs['image'] = (
-                    torch.tensor(next_obs['image'], dtype=torch.float32, device=device).permute(0, 3, 1, 2) / 255.0
+                    torch.tensor(np.array(next_obs['image']), dtype=torch.float32, device=device).permute(0, 3, 1, 2)
+                    # torch.tensor(next_obs['image'], dtype=torch.float32, device=device).permute(0, 3, 1, 2) / 255.0
                 )
                 next_done = torch.Tensor(next_done).to(device)
 

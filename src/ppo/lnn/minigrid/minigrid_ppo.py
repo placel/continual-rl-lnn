@@ -45,7 +45,7 @@ class Args:
 
     # ALGORITHM ARGS
     # Name of the environment
-    env_id: str = 'MiniGrid-KeyCorridorS3R1-v0'
+    env_id: str = 'MiniGrid-Empty-5x5-v0'
     # Total timesteps allowed in the whole experiment
     total_timesteps: int = 500_000
     # # Learning rate for the optimizer
@@ -115,7 +115,7 @@ class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
 
-        obs_space, action_space = np.array(envs.single_observation_space.shape).prod(), np.array(envs.single_action_space).prod()
+        _, action_space = np.array(envs.single_observation_space.shape).prod(), np.array(envs.single_action_space).prod()
 
         # Can add MaxPooling later
         self.critic = nn.Sequential(

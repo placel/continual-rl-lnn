@@ -11,47 +11,50 @@ import datetime
 # Iterate over every environment and play each 10 times to aquire perfromance
 # Returns a list of average rewards for each environment 
 # If doing few_shot learning in the future (more meta-learning) set few_shot to k trainable steps
-def mean_reward(agent, envs, episodes=10, step_name='step', dir='results', few_shot=0):
+def mean_reward(agent, envs, episodes=10, step_name='step', dir='results', render_mode=None):
     # Extract the device 
     device = next(agent.parameters()).device
     rewards = []
     # Loop over every environment
     for env_id in envs:
 
-        env = gym.make(env_id)
+        env = gym.make(env_id, render_mode=render_mode)
         total_reward = []
 
         # Run each environment 10 times
-        for i in range(episodes):
+        for _ in range(episodes):
             state, _ = env.reset()
             done = False
 
-            episode_reward = 0.0
-            # Generate states here ( should be empty for initial pass)
-            cfc_states = None
+            episode_reward = 0.0 # Keep track of total reward throughout episode
+
+            # If the model uses a CfC layer for actor or critic, generate states to use, or set to None
+            if agent.actor_cfc or agent.critic_cfc:
+                states = torch.zeros(1, agent.hidden_state_dim, device=device)
+            else:
+                states = None
+                
             while not done:
                 # Normalize the image, reshape for cnn, and unsqueeze to add batch dimension
-                img = (torch.tensor(state['image'], dtype=torch.float32, device=device).permute(2, 0, 1) / 255.0).unsqueeze(0)
+                # img = (torch.tensor(state['image'], dtype=torch.float32, device=device).permute(2, 0, 1) / 255.0).unsqueeze(0)
+                img = torch.tensor(np.array(state['image']), dtype=torch.float32, device=device).permute(2, 0, 1).unsqueeze(0)
 
-                # Get the action
-                # Extract the states after implemented 
+                # Get the action to take
                 # No gradient as we don't want the model learning here
                 with torch.no_grad():
-                    action, _, _, _ = agent.get_action_and_value(img)
+                    action, _, _, _, states, _ = agent.get_action_and_value(img, states, deterministic=True) # Deterministic set True as we don't want stochasticity to influence the model during eval
 
-                # APply the action
-                state, reward, term, trunc, _ = env.step(action)
+                # APply the action to current state
+                state, reward, term, trunc, _ = env.step(action.item())
                 done = np.logical_or(term, trunc)
-
                 episode_reward += reward
-            
-            total_reward.append(episode_reward)
 
-        mean_reward = np.mean(total_reward)
-        rewards.append(mean_reward)
+            total_reward.append(episode_reward) # Append the episode reward for averaging later
+
+        mean_reward = np.mean(total_reward) # Average out the current environments reward
+        rewards.append(mean_reward) # append reward to total rewards array
     
-    # Optionally save rewards here for logging
-    return np.array(rewards)
+    return np.array(rewards) # Return rewards as numpy array
 
 # Follows the original paper (3,500 citations) instead of the 2018 revision (250 citation); just for coinsistency 
 def compute_fwt(perf_matrix, b):
@@ -69,9 +72,24 @@ def compute_bwt(perf_matrix):
 
     return np.mean(vals) if vals else 0.0
 
-def plot_perf_matrix(perf_matrix, save_path='./performance_matrix'):
+def plot_perf_matrix(perf_matrix, sequence=None, save_path='./performance_matrix'):
+    
+    # Extract the environment name alone, not 'MiniGrid' or 'v-0' for clean presentation
+    labels = []
+    for e in sequence:
+        e = e.split('-')
+
+        # If len(e) is >= 4, the environment has something like '5x5'or '6x6' which is relevant, and should be kept (e.g. Empty-5x5)
+        if len(e) >= 4:
+            labels.append('-'.join(e[1:3]))
+        # Otherwise just take the environment name (e.g. DoorKey)
+        else:
+            labels.append(e[1])
+
+
+    # Reverse the sequence and convert to list to display as the y_tick labels
     plt.figure(figsize=(6, 5))
-    sns.heatmap(perf_matrix, annot=True, fmt='.2f', cmap='viridis')
+    sns.heatmap(perf_matrix, annot=True, fmt='.2f', cmap='viridis', xticklabels=labels, yticklabels=labels)
     plt.title('Performance Matrix (Train vs Eval)')
     plt.xlabel('Eval Task')
     plt.ylabel('Train Task')
