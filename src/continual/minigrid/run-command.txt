@@ -1,14 +1,30 @@
+EXPERIMENT RUN FILE
+cd Documents/School/Wales/MSc/continual-rl-lnn
+python ./src/continual/minigrid/experiment.py
+
+
+
+
 LNN Actor & Critic:
 
 conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
 python ./src/continual/minigrid/continual.py --num-envs 4 --cfc-actor --cfc-critic --learning-rate 1e-4 --ent-coef 0.03
 
+
+Baseline LSTM:
+
+conda activate lnn_env
+cd Documents/School/Wales/MSc/continual-rl-lnn
+python ./src/continual/minigrid/continual.py --num-envs 4 --hidden-state-dim 256 --use-lstm --learning-rate 1e-4 --ent-coef 0.03
+
+
 Baseline:
 
 conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
-python ./src/continual/minigrid/continual.py --num-envs 4 --learning-rate 2.5e-4 --ent-coef 0.01
+python ./src/continual/minigrid/continual.py --num-envs 4 --learning-rate 1e-4 --ent-coef 0.03
+
 
 
 Experiment with these later

@@ -50,7 +50,7 @@ class SharedEmbedding(nn.Module):
 
 class SharedNetwork(nn.Module):
 
-    def __init__(self, shared_embedding, embedding_dim, hidden_dim=64, hidden_state_dim=128, use_cfc=False):
+    def __init__(self, shared_embedding, embedding_dim, hidden_dim=64, hidden_state_dim=128, use_cfc=False, use_lstm=False):
         super().__init__()
         
         self.shared_embedding = shared_embedding
@@ -58,11 +58,15 @@ class SharedNetwork(nn.Module):
         # If we're using a CfC layer for the Actor Model, apply CfC
         # Otherwise use simple MLP
         if use_cfc:
-            self.cfc1 = CfC(embedding_dim, hidden_state_dim, batch_first=True) # batch_first=True is required with the ncps library
+            self.cfc1 = CfC(embedding_dim, hidden_state_dim, batch_first=True)
+        if use_lstm:
+            self.lstm1 = nn.LSTM(embedding_dim, hidden_state_dim, batch_first=True)
+        # Use 2 final layers for some 'fairness'
         else:
             self.linear1 = layer_init(nn.Linear(embedding_dim, hidden_dim))
+            self.linear2 = layer_init(nn.Linear(hidden_dim, hidden_dim))
             
-    def forward(self, image, cfc_states=None):
+    def forward(self, image, cfc_states=None, lstm_states=(None, None)):
 
         x = self.shared_embedding(image)
 
@@ -78,13 +82,25 @@ class SharedNetwork(nn.Module):
             x, cfc_states = self.cfc1(x, cfc_states)
             # Remove extra time dimension
             x = x.squeeze(1)
+        # Same case for LSTM, states need proper management
+        elif hasattr(self, 'lstm1'):
+            # Reshaping to add the time dimension in the 1st index so we have (batch_size, time_dim, features)
+            # Features is all feature maps sequentially combined  
+            x = x.unsqueeze(1)
 
+            # print('STATES')
+            # print(lstm_states)
+            # Process through CfC layer, extracting model states
+            x, lstm_states = self.lstm1(x, lstm_states)
+            # Remove extra time dimension
+            x = x.squeeze(1)
         # Process as normal
         else:
             # Otherwise, process as normal
             x = F.relu(self.linear1(x))
+            x = F.relu(self.linear2(x))
 
-        return x, cfc_states
+        return x, cfc_states, lstm_states
 
 class CriticHead(nn.Module):
 
@@ -181,6 +197,7 @@ class Agent(nn.Module):
         self.hidden_state_dim = config['hidden_state_dim']
         self.actor_cfc = config['actor_cfc']
         self.critic_cfc = config['critic_cfc']
+        self.use_lstm = config['use_lstm']
         
         self.shared_embedding = SharedEmbedding(self.hidden_dim) # Shared image embedding
         self.shared_cfc = None # Shared CfC layer
@@ -194,12 +211,12 @@ class Agent(nn.Module):
         
         # If both Actor and Critic are using CfC, share the network to ensure consistency
         if self.actor_cfc and self.critic_cfc:
-            print('Shared CfC')
+            print('Actor & Critic CfC')
             # Pass the embedding to the CfC and return 
             # Output will be hidden_size as no reduction occurs. 
             self.shared_cfc = SharedNetwork(self.shared_embedding, embedding_dim, self.hidden_dim, self.hidden_state_dim, use_cfc=True)
 
-            # Create the final head of actor and critic with hidden_dim (output of shared_cfc) as input
+            # Create the final head of actor and critic with hidden_state_dim (output of shared_cfc) as input
             self.critic = layer_init(nn.Linear(self.hidden_state_dim, 1), std=1.0)
             self.actor = layer_init(nn.Linear(self.hidden_state_dim, self.action_space), std=0.01)
         
@@ -212,31 +229,44 @@ class Agent(nn.Module):
             # Create the actor model. Pass in the envs which will adapt depending on the tasks at hand
             self.actor = ActorHead(self.shared_embedding, embedding_dim, self.action_space, self.hidden_dim, self.hidden_state_dim, self.actor_cfc)
 
+        # Create the SharedNetwork with LSTM layer 
+        elif self.use_lstm:
+            print('LSTM Model')
+            self.shared_baseline = SharedNetwork(self.shared_embedding, embedding_dim, self.hidden_dim, hidden_state_dim=self.hidden_state_dim, use_lstm=True)
+
+            # Create the final head of actor and critic with hidden_state_dim (output of shared_baseline) as input
+            self.critic = layer_init(nn.Linear(self.hidden_state_dim, 1), std=1.0)
+            self.actor = layer_init(nn.Linear(self.hidden_state_dim, self.action_space), std=0.01)
+
         # Create the baseline model without CfC
         else:
             print('Baseline Model')
             self.shared_baseline = SharedNetwork(self.shared_embedding, embedding_dim, self.hidden_dim, use_cfc=False)
+
             self.critic = layer_init(nn.Linear(self.hidden_dim, 1), std=1.0)
             self.actor = layer_init(nn.Linear(self.hidden_dim, self.action_space), std=0.01)
 
-    def get_value(self, image, states=None):
+    def get_value(self, image, cfc_states=None, lstm_states=(None, None)):
         # If sharing network, process image and states through the shared network
         if self.shared_cfc:
-            output, _ = self.shared_cfc(image, states)
+            output, _, _ = self.shared_cfc(image, cfc_states)
             value = self.critic(output)
-        elif self.shared_baseline: # If using baseline process through shared baseline network then to critic
-            output, _ = self.shared_baseline(image)
+
+        # If using baseline process through shared baseline network then to critic
+        elif self.shared_baseline: 
+            output, _, _ = self.shared_baseline(image, lstm_states=lstm_states) # lstm_states is None by default. If LSTM isn't being used, this won't be an issue
             value = self.critic(output)
-        # If not using a shared network, pass states into critic separately
+
+        # If not using a shared network, pass states into critic separately (LNN_Actor XOR LNN_Critic)
         else:
-            value, _ = self.critic(image, states)
+            value, _, _ = self.critic(image, cfc_states)
             
         return value
     
-    def get_action_and_value(self, image, states=None, action=None, deterministic=False):
+    def get_action_and_value(self, image, cfc_states=None, lstm_states=(None, None), action=None, deterministic=False):
         # If using a shared network, process accordingly passing image and states to shared_network
         if self.shared_cfc:
-            output, states = self.shared_cfc(image, states)
+            output, cfc_states, _ = self.shared_cfc(image, cfc_states)
 
             logits = self.actor(output)
             value = self.critic(output)
@@ -244,16 +274,17 @@ class Agent(nn.Module):
         # If only using only actor_cfc or critic_cfc, process input differently passing states to respective head
         elif self.actor_cfc:
             # Pass the image, states, and mission to the model to get an action
-            logits, states = self.actor(image, states)
+            logits, cfc_states = self.actor(image, cfc_states)
             value, _ = self.critic(image)
+
         elif self.critic_cfc:
             # Pass the image, states, and mission to the model to get an action
             logits, _ = self.actor(image)
-            value, states = self.critic(image, states)
+            value, cfc_states = self.critic(image, cfc_states)
         
         # Lastly, if no CfC is being used (baseline), process normally
         else:
-            output, _ = self.shared_baseline(image)
+            output, _, lstm_states = self.shared_baseline(image, lstm_states=lstm_states)
             logits = self.actor(output)
             value = self.critic(output)
 
@@ -264,4 +295,4 @@ class Agent(nn.Module):
         elif action is None:
             action = probs.sample()
 
-        return action, probs.log_prob(action), probs.entropy(), value, states, logits
+        return action, probs.log_prob(action), probs.entropy(), value, cfc_states, lstm_states, logits

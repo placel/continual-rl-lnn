@@ -32,6 +32,8 @@ from utils import models # Custom class containing definitions for the main mode
 class Args:
     # Experiment Name
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
+    # Accepts a string and will create a txt file to define the current experiment
+    exp_def: str = "Testing baseline model" 
     # Seed of the experiemnt (for reproduction)
     seed: int = 1
     # if toggled, `torch.backends.cudnn.deterministic=False`
@@ -45,8 +47,18 @@ class Args:
     wandb_entity: str = None
     # Toggling will capture video
     capture_video: bool = False
+    # Enable CfC Actor
+    cfc_actor: bool = False
+    # Enable CfC Critic
+    cfc_critic: bool = False
+    # Toggle the usage of an LSTM in the Baseline model
+    use_lstm: bool = False
+    # Size of hidden dimensions 
+    hidden_dim: int = 64
+    # Size of the reccurent states
+    hidden_state_dim: int = 128
     # Toggle early stopping (es)
-    es_flag: bool = True
+    es_flag: bool = False
     # Toggle Elastic Weight Consolidation (EWC)
     ewc: bool = False
 
@@ -55,10 +67,7 @@ class Args:
     env_id: str = 'MiniGrid-Empty-5x5-v0'
     # Total timesteps allowed in the whole experiment
     total_timesteps: int = 500_000
-    # Choose if the model should utilize CfC for Actor and Critic Head
-    # If both are false, the Baseline model will be used
-    cfc_actor: bool = False
-    cfc_critic: bool = False
+    # total_timesteps: int = 150_000
     # total_timesteps: int = 1_000_000
     # # Learning rate for the optimizer
     # learning_rate: float = 2.5e-4
@@ -70,8 +79,6 @@ class Args:
     # Total number of steps to run in each environment per policy rollout
     num_steps: int = 128
     # num_steps: int = 256
-    # Size of the LNN hidden state
-    hidden_state_size: int = 64
     #Toggles annealing for policy and value networks
     # anneal_lr: bool = True
     anneal_lr: bool = False
@@ -130,9 +137,9 @@ def end_environment(cur_task_indx, es_triggered=False):
     print(f'Environment training time: {datetime.timedelta(seconds=time.time() - sequence_start_time)}')
 
     # Calculate average reward per environment
-    # rewards = evaluation.mean_reward(agent, sequence_keys)
+    rewards = evaluation.mean_reward(agent, sequence_keys)
     # Assign rewards to the current task index
-    # perf_matrix[cur_task_indx] = rewards
+    perf_matrix[cur_task_indx] = rewards
 
     # If EWC is enabled, compute it's loss
     if args.ewc:
@@ -141,14 +148,15 @@ def end_environment(cur_task_indx, es_triggered=False):
         ewc.register_buffers(b_obs, b_actions.long(), b_cfc_h_states, num_steps=args.num_steps, num_envs=args.num_envs)
 
     # Save this version of the model (in case of crashes later on)
-    torch.save(agent.state_dict(), f'{model_path}/{sequence_keys[cur_task_indx]}-es_{es_triggered}.pt')
+    torch.save(agent.state_dict(), f'{model_path}/{sequence_keys[cur_task_indx]}.pt')
+    # torch.save(agent.state_dict(), f'{model_path}/{sequence_keys[cur_task_indx]}-es_{es_triggered}.pt')
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-
+    
     print(f'Batchsize: {args.batch_size}')
     print(f'MiniBatch: {args.minibatch_size}')
     print(f'Num Iterations: {args.num_iterations}')
@@ -173,20 +181,25 @@ if __name__ == "__main__":
         '|param|value|\n|-|-|\n%s' % ('\n'.join([f'|{key}|{value}|' for key, value in vars(args).items()]))
     )
 
+    # sequence = {
+    #     'MiniGrid-Empty-5x5-v0': 4,
+    #     # 'MiniGrid-Empty-Random-5x5-v0',
+    #     # 'MiniGrid-Empty-Random-5x5-v0': 3,
+    #     'MiniGrid-DoorKey-5x5-v0': 10, ################ This one
+    #     # 'MiniGrid-Empty-Random-6x6-v0': 5,
+    #     # 'MiniGrid-DoorKey-6x6-v0': 12,
+    #     # 'MiniGrid-Empty-16x16-v0',
+    #     # 'MiniGrid-Empty-16x16-v0',
+    #     # 'MiniGrid-FourRooms-v0'
+    #     'MiniGrid-Unlock-v0': 12 ##################### THis one
+    #     # 'MiniGrid-KeyCorridorS3R2-v0': 12,
+    #     # 'MiniGrid-KeyCorridorS3R1-v0': 10
+    # }   
+
     sequence = {
-        # 'MiniGrid-Empty-5x5-v0',
-        # 'MiniGrid-Empty-Random-5x5-v0',
-        'MiniGrid-Empty-Random-5x5-v0': 2,
-        'MiniGrid-DoorKey-5x5-v0': 8,
-        'MiniGrid-Empty-Random-6x6-v0': 5,
-        'MiniGrid-DoorKey-6x6-v0': 12,
-        # 'MiniGrid-Empty-16x16-v0',
-        # 'MiniGrid-Empty-16x16-v0',
-        # 'MiniGrid-FourRooms-v0'
-        'MiniGrid-Unlock-v0': 12,
-        # 'MiniGrid-KeyCorridorS3R1-v0': 10
-        # 'MiniGrid-KeyCorridorS3R2-v0',
-    }                               
+        args.env_id: 0
+    }
+
     # Create a list of environment keys. Prevents the need for manually managing two env_id and patience lists
     sequence_keys = list(sequence.keys())
 
@@ -214,22 +227,29 @@ if __name__ == "__main__":
     assert isinstance(envs.single_action_space, gym.spaces.Discrete) # Only disscrete action space is supported here
 
     model_name = f"a={args.cfc_actor}_c={args.cfc_critic}{'_ewc' if args.ewc else ''}_{int(time.time())}"
-    model_path = f'{os.path.dirname(__file__)}/models/{model_name}'
+    model_path = f'{os.path.dirname(__file__)}/experiments/{args.exp_name}/models/{model_name}'
     pathlib.Path(model_path).mkdir(parents=True, exist_ok=True) # Create the path
 
     # Create the agent
-    hidden_dim = 64
-    hidden_state_dim = 64
+    lstm_layers = 1 # Keep as one, maybe toy with it later
     model_config = {
         'action_space': int(envs.single_action_space.n),
-        'hidden_dim': int(hidden_dim),
-        'hidden_state_dim': int(hidden_state_dim),
+        'hidden_dim': int(args.hidden_dim),
+        'hidden_state_dim': int(args.hidden_state_dim),
         'actor_cfc': bool(args.cfc_actor),
-        'critic_cfc': bool(args.cfc_critic)
+        'critic_cfc': bool(args.cfc_critic),
+        'use_lstm': bool(args.use_lstm),
+        'ewc': bool(args.ewc)
     }
 
-    print(f'CfC Actor: {args.cfc_actor}')
-    print(f'CfC Critic: {args.cfc_critic}')
+    # Pre-training prints
+    if args.cfc_actor:
+        print(f'CfC Actor')
+    if args.cfc_critic:
+        print(f'CfC Critic')
+    if args.use_lstm:
+        print(f'Using LSTM')
+
     agent = models.Agent(model_config).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
@@ -242,17 +262,28 @@ if __name__ == "__main__":
         }
         json.dump(combined_config, f, indent=2)
 
+    # CLAUDE CODE BELOW - > MAKE SEXIER LATER
+    log_file = f'{model_path}/training_log_{args.exp_name}_{args.seed}.csv'
+    import csv
+    # Initialize CSV file
+    if not os.path.exists(log_file):
+        csv_file = open(log_file, 'w', newline='')
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow(['global_step', 'task_step', 'env', 'episodic_return', 'episodic_length'])
+
+
     # Collect baseline model performance (performance with no training)
     # This is needed to compute Forward Transfer
     # Returns mean reward for each task
     baselines = []
     print('Collecting random baselines...')
-    baselines = evaluation.mean_reward(agent, sequence_keys)
+    # baselines = evaluation.mean_reward(agent, sequence_keys)
 
     if args.ewc:
         from utils.stabilization import ElasticWeightConsolidation
-        ewc_strength = 1_000_000
+        ewc_strength = 100 # The original EWC Paper uses 400 inside of the Atari Suite with DQN for reference 
         ewc = ElasticWeightConsolidation(agent, ewc_strength)
+        print(f'EWC Initialized with strength {ewc_strength}...')
 
     # Alogirthm Logic
     #Storage
@@ -272,9 +303,17 @@ if __name__ == "__main__":
 
     # Initialize the states depending on if CfC is used for either Actor or Critic
     if args.cfc_actor or args.cfc_critic:
-        cfc_h_state = torch.zeros((args.num_steps, args.num_envs, hidden_state_dim)).to(device)
+        cfc_h_state = torch.zeros((args.num_steps, args.num_envs, args.hidden_state_dim)).to(device)
     else: 
         cfc_h_state = None
+
+    # Create tensors for LSTM states. LSTM states are expected to be tuples, however, tuples are immutable, so values must first be created as tensors
+    if args.use_lstm:
+        lstm_h_state = torch.zeros((args.num_steps, lstm_layers, args.num_envs, args.hidden_state_dim)).to(device)
+        lstm_c_state = torch.zeros((args.num_steps, lstm_layers, args.num_envs, args.hidden_state_dim)).to(device)
+    else: 
+        lstm_h_state = None
+        lstm_c_state = None
 
     # Try not to modify
     # Start game
@@ -293,8 +332,9 @@ if __name__ == "__main__":
         # Keep track of how long each env lasts, it should get longer with each
         sequence_start_time = time.time()
         
-        # initialize the EarlyStopping class at start of every episode to ensure no overlap between task performance
-        es_monitor = EarlyStopping(patience=sequence[cur_env], min_delta=0.01, mode='max', verbose=True, restore_weights_flag=True) 
+        if args.es_flag:
+            # initialize the EarlyStopping class at start of every episode to ensure no overlap between task performance
+            es_monitor = EarlyStopping(patience=sequence[cur_env], min_delta=0.01, mode='max', verbose=True, restore_weights_flag=True) 
 
         # The first batch is created before this loop. If not the first batch, 
         # create the next batch of environments associated with the current curriculum environment
@@ -321,10 +361,18 @@ if __name__ == "__main__":
                 lrnow = frac * args.learning_rate
                 optimizer.param_groups[0]['lr'] = lrnow
 
+            # Prepare CfC or LSTM states accordingly
             if args.cfc_actor or args.cfc_critic:
-                cfc_state = torch.zeros((args.num_envs, hidden_state_dim)).to(device)
+                cfc_state = torch.zeros((args.num_envs, args.hidden_state_dim)).to(device)
             else:
                 cfc_state = None
+
+            if args.use_lstm:
+                t_lstm_h_state = torch.zeros((lstm_layers, args.num_envs, args.hidden_state_dim)).to(device)
+                t_lstm_c_state = torch.zeros((lstm_layers, args.num_envs, args.hidden_state_dim)).to(device)
+            else: 
+                t_lstm_h_state = None
+                t_lstm_c_state = None
 
             # Perform a collection of states in batches of usually 128
             for step in range(0, args.num_steps):
@@ -337,20 +385,40 @@ if __name__ == "__main__":
                 # Intialized to zero but update over time
                 if args.cfc_actor or args.cfc_critic:
                     cfc_h_state[step] = cfc_state
-
+                
+                if args.use_lstm:
+                    lstm_h_state[step] = t_lstm_h_state
+                    lstm_c_state[step] = t_lstm_c_state
+                
+                # Convert to proper tuple format before forward passing
+                lstm_states = (t_lstm_h_state, t_lstm_c_state)
+                
                 # Algorithm logic: action logic
                 # During the collection of data, we pass the state to the model
-                # and sample a random action and store it. Data collection is stochastic
+                # and sample a stochastic action and store it. Data collection is stochastic
                 # Learning occurs after data is collected and epochs are run
                 with torch.no_grad():
                     # Get the action the actor takes. And get the value the critic assigns said action
-                    action, logprob, _, value, new_cfc_state, _ = agent.get_action_and_value(next_obs['image'], cfc_state)
+                    action, logprob, _, value, new_cfc_state, new_lstm_states, _ = agent.get_action_and_value(next_obs['image'], cfc_state, lstm_states)
 
                     # If CfC is used, Update the states with new states, resetting hidden states where the next_state is terminal
                     if not new_cfc_state == None:
-                        # print('Hi')
                         new_cfc_state = new_cfc_state * (1.0 - next_done.unsqueeze(1))
                         cfc_state = new_cfc_state
+
+                    # Same logic for LSTM
+                    if not new_lstm_states == (None, None):
+                        new_h_state, new_c_state = new_lstm_states
+                        
+                        # If LSTM states have layer dimension (1, batch, hidden_dim):
+                        # next_done is (batch,) -> need (1, batch, 1) for proper broadcasting
+                        done_mask = (1.0 - next_done).unsqueeze(0).unsqueeze(2)  # (1, batch, 1)
+                        
+                        new_h_state = new_h_state * done_mask
+                        new_c_state = new_c_state * done_mask
+                        
+                        t_lstm_h_state = new_h_state
+                        t_lstm_c_state = new_c_state
 
                     values[step] = value.flatten()
                 actions[step] = action
@@ -362,8 +430,6 @@ if __name__ == "__main__":
                 rewards[step] = torch.tensor(reward).to(device)
 
                 # Once again we need to extract the image from the obs and permute for processing
-                # Normalize it too
-                # next_obs['image'] = (torch.tensor(next_obs['image'], dtype=torch.float32, device=device).permute(0, 3, 1, 2) / 255.0)
                 next_obs['image'] = torch.tensor(next_obs['image'], dtype=torch.float32, device=device).permute(0, 3, 1, 2)
                 next_done = torch.Tensor(next_done).to(device)
 
@@ -371,14 +437,24 @@ if __name__ == "__main__":
                 if "episode" in infos and "_episode" in infos:
                     for i, finished in enumerate(infos["_episode"]):
                         if finished:
+                            csv_writer.writerow([
+                                global_step,
+                                env_step_count, 
+                                i,
+                                infos['episode']['r'][i].item(),
+                                infos['episode']['l'][i].item()
+                            ])
+                            csv_file.flush()  # Ensure data is written immediately
+
                             print(f"global_step={global_step}, task_step={env_step_count}, env={i}, episodic_return={infos['episode']['r'][i]}", flush=True)
                             writer.add_scalar("charts/episodic_return", infos['episode']['r'][i], global_step)
                             writer.add_scalar("charts/episodic_length", infos['episode']['l'][i], global_step)
 
             # Calculate advantages for future usage in algorithm 
             with torch.no_grad():
+                lstm_states = (t_lstm_h_state, t_lstm_c_state)
                 # Get the critics thoughts on the value of the next state (for all envs)
-                next_value = agent.get_value(next_obs['image'], cfc_state).reshape(1, -1)
+                next_value = agent.get_value(next_obs['image'], cfc_states=cfc_state, lstm_states=lstm_states).reshape(1, -1)
 
                 # allocate space
                 advantages = torch.zeros_like(rewards).to(device)
@@ -427,13 +503,16 @@ if __name__ == "__main__":
             b_values = values.reshape(-1)
 
             if args.cfc_actor or args.cfc_critic:
-                b_cfc_h_states = cfc_h_state.reshape(-1, hidden_state_dim)
+                b_cfc_h_states = cfc_h_state.reshape(-1, args.hidden_state_dim)
             else:
                 b_cfc_h_states = None
 
-            # print(b_mission_tokens.shape)
-            # print(f'OBS: {b_obs.shape}')
-
+            if args.use_lstm:
+                b_lstm_h_states = lstm_h_state.reshape(-1, lstm_layers, args.hidden_state_dim)
+                b_lstm_c_states = lstm_c_state.reshape(-1, lstm_layers, args.hidden_state_dim)
+            else:
+                b_lstm_h_states = None
+                b_lstm_c_states = None
 
             # Optimize the policy (actor) and value (critic) networks
             b_inds = np.arange(args.batch_size)
@@ -451,12 +530,26 @@ if __name__ == "__main__":
                     # Extract states for this mini-batch
                     # and pass to model as one array
                     if args.cfc_actor or args.cfc_critic:
-                        mb_states = b_cfc_h_states[mb_inds].clone()
+                        mb_cfc_states = b_cfc_h_states[mb_inds].clone()
                     else:
-                        mb_states = None
+                        mb_cfc_states = None
+
+                    # if args.use_lstm:
+                    #     mb_lstm_states = (
+                    #         b_lstm_h_states[:, mb_inds].clone(),  # Keep (lstm_layers, minibatch, hidden) format
+                    #         b_lstm_c_states[:, mb_inds].clone()
+                    #     )
+
+                    if args.use_lstm:
+                        mb_lstm_states = (
+                            b_lstm_h_states[mb_inds].transpose(0, 1).clone(),  # (mb, 1, hidden) -> (1, mb, hidden)
+                            b_lstm_c_states[mb_inds].transpose(0, 1).clone()
+                        )
+                    else:
+                        mb_lstm_states = None
 
                     # Forward pass (with grad) the minibatch through to the model to get values associated with the provided action
-                    _, new_log_prob, entropy, new_value, _, _ = agent.get_action_and_value(b_obs[mb_inds], mb_states, action=b_actions.long()[mb_inds])
+                    _, new_log_prob, entropy, new_value, _, _, _ = agent.get_action_and_value(b_obs[mb_inds], cfc_states=mb_cfc_states, lstm_states=mb_lstm_states, action=b_actions.long()[mb_inds])
                     
                     # Ratio of the probablity of the new policy vs the old policy for taking provided action
                     # This is a key component in the PPO equation
@@ -563,15 +656,17 @@ if __name__ == "__main__":
         es_triggered = False
     
     print('Computing Metrics...')
-    fwt = evaluation.compute_fwt(perf_matrix, baselines)
-    bwt = evaluation.compute_bwt(perf_matrix)
+    # fwt = evaluation.compute_fwt(perf_matrix, baselines)
+    # bwt = evaluation.compute_bwt(perf_matrix)
     # Take the mean of all averaged rewards to get a singular average
-    mean_reward = np.mean(evaluation.mean_reward(agent, sequence_keys))
+    # mean_reward = np.mean(evaluation.mean_reward(agent, sequence_keys))
 
-    evaluation.plot_perf_matrix(perf_matrix, sequence=sequence_keys, save_path=f'{model_path}/performance_matrix.png')
-    evaluation.plot_metrics(fwt, bwt, mean_reward, save_path=f'{model_path}/metrics.png')
+    evaluation.plot_perf_matrix(perf_matrix, sequence=sequence_keys, save_path=f'{model_path}/performance_matrix.svg') # Save as SVG to prevent blur
+    # evaluation.plot_metrics(fwt, bwt, mean_reward, save_path=f'{model_path}/metrics.svg')
 
     print(f'Final training time: {datetime.timedelta(seconds=time.time() - master_start_time)}')
     envs.close()
     writer.close()
+    if csv_file:
+        csv_file.close()
     torch.save(agent.state_dict(), f'{model_path}/final_model.pt')

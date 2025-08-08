@@ -29,7 +29,7 @@ class ElasticWeightConsolidation:
         num_batch = num_steps * num_envs
 
         # Batch process the states instead of iterating through
-        _, _, _, _, _, logits = self.agent.get_action_and_value(b_obs, b_states)
+        _, _, _, _, _, _, logits = self.agent.get_action_and_value(b_obs, b_states)
         output = F.log_softmax(logits, dim=1)
 
         # Collect indices for the batch to be extracted
@@ -43,63 +43,9 @@ class ElasticWeightConsolidation:
         grad_log_liklihood = autograd.grad(log_liklihoods, self.agent.parameters(), allow_unused=True, create_graph=False, retain_graph=False)
         _buff_param_names = [param[0].replace('.', '__') for param in self.agent.named_parameters()]
         for _buff_param_name, param in zip(_buff_param_names, grad_log_liklihood):
-            if param is not None:
-                print(f"Creating fisher buffer for: {_buff_param_name}")
+            if param is not None: # Some parameters are never used and will cause error within compute_ewc_loss() if not stored
                 self.agent.register_buffer(_buff_param_name + '_estimated_fisher', param.data.clone() ** 2)
-            else:
-                print(f"No gradient for parameter: {_buff_param_name}")
         
-    # def _update_fisher_params(self, b_obs, b_actions, b_states, num_steps, num_envs):
-    #     num_batch = num_steps * num_envs
-        
-    #     # Process the entire batch at once
-    #     _, _, _, _, _, logits = self.agent.get_action_and_value(b_obs, b_states)
-    #     output = F.log_softmax(logits, dim=1)
-        
-    #     batch_indices = torch.arange(num_batch, device=b_obs.device)
-    #     log_liklihoods = output[batch_indices, b_actions]
-    #     log_liklihoods = log_liklihoods.mean()
-        
-    #     # Collect parameters that actually get gradients
-    #     used_params = []
-    #     used_param_names = []
-        
-    #     for param_name, param in self.agent.named_parameters():
-    #         if param.requires_grad:
-    #             try:
-    #                 # Test if this parameter gets a gradient
-    #                 grad = autograd.grad(log_liklihoods, [param], retain_graph=True, allow_unused=True)[0]
-    #                 if grad is not None:
-    #                     used_params.append(param)
-    #                     used_param_names.append(param_name)
-    #             except RuntimeError:
-    #                 # Parameter not connected to the computation graph
-    #                 continue
-        
-    #     print(f"Found {len(used_params)} parameters with gradients out of {len(list(self.agent.parameters()))} total")
-        
-    #     if len(used_params) == 0:
-    #         print("No parameters have gradients! Something is wrong with the computation graph.")
-    #         return
-        
-    #     # Now compute gradients for only the used parameters
-    #     grad_log_liklihood = autograd.grad(
-    #         log_liklihoods, 
-    #         used_params, 
-    #         create_graph=False,
-    #         retain_graph=False
-    #     )
-        
-    #     # Create Fisher buffers only for parameters that were actually used
-    #     buffers_created = 0
-    #     for param_name, grad in zip(used_param_names, grad_log_liklihood):
-    #         _buff_param_name = param_name.replace('.', '__')
-    #         self.agent.register_buffer(_buff_param_name + '_estimated_fisher', grad.data.clone() ** 2)
-    #         buffers_created += 1
-    #         print(f"Created Fisher buffer for: {param_name}")
-        
-    #     print(f"Total Fisher buffers created: {buffers_created}")
-    
     def _update_mean_params(self):
         # Iterate over named parameters in the model, and register them to the model in a buffer 
         for param_name, param in self.agent.named_parameters():
