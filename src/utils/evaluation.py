@@ -16,8 +16,8 @@ THIS SHOULD'VE BEEN A CLASS, NOT STATIC
 # Iterate over every environment and play each 10 times to aquire perfromance
 # Returns a list of average rewards for each environment 
 # If doing few_shot learning in the future (more meta-learning) set few_shot to k trainable steps
-def mean_reward(agent, envs, episodes=10, return_all=True, render_mode=None):
-    
+def mean_reward(agent, envs, seed=42, episodes=10, return_all=True, render_mode=None):
+
     # List of possible actions the model can take. Used for debugging
     action_list = [
         'left',
@@ -31,14 +31,14 @@ def mean_reward(agent, envs, episodes=10, return_all=True, render_mode=None):
     # Extract the device 
     device = next(agent.parameters()).device
     rewards, stds, all_returns = [], [], []
-    # Loop over every environment
+    # Loop over every environment 
     for env_id in envs:
 
         env = gym.make(env_id, render_mode=render_mode)
         total_reward = []
 
-        # Initial seeding
-        state, _ = env.reset(seed=45)
+        state, _ = env.reset(seed=seed)
+
         # Run each environment 10 times
         for i in range(episodes):
             if i > 0:

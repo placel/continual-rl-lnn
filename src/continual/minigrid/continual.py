@@ -74,11 +74,6 @@ class Args:
     env_id: str = 'MiniGrid-Empty-5x5-v0'
     # Total timesteps allowed in the whole experiment
     total_timesteps: int = 500_000
-    # total_timesteps: int = 150_000
-    # total_timesteps: int = 1_000_000
-    # # Learning rate for the optimizer
-    # learning_rate: float = 2.5e-4
-    # learning_rate: float = 0.001
     # Learning rate for the optimizer
     learning_rate: float = 1.5e-4 # Better for CfC models
     # Number of environments for parallel game processing
@@ -87,8 +82,7 @@ class Args:
     num_steps: int = 128
     # num_steps: int = 256
     #Toggles annealing for policy and value networks
-    # anneal_lr: bool = True
-    anneal_lr: bool = False
+    anneal_lr: bool = True
     # Gamma value
     gamma: float = 0.99
     # Lambda value for the General Advantage Estimation
@@ -144,11 +138,26 @@ def end_environment(cur_task_indx, es_triggered=False):
     print(f'Environment training time: {datetime.timedelta(seconds=time.time() - sequence_start_time)}')
 
     # Calculate average reward per environment
-    means, stds, _ = evaluation.mean_reward(agent, sequence_keys)
+    # If args.trial_id is not None, HPO is running, and an average across 3 different seed should be used
+    if args.trial_id is not None:
+        seeds = [92, 73, 11]
+        means, stds = [], []
+        for i in range(3):
+            mean, std, _ = evaluation.mean_reward(agent, sequence_keys, seed=seeds[i])
+            means.append(mean)
+            stds.append(std)
+
+        # Convert into one np array, and take the mean of each environment across all seeds
+        means = np.stack(means).mean(axis=0)
+        stds = np.stack(stds).std(axis=0, ddof=1)
+    else:
+        means, stds, _ = evaluation.mean_reward(agent, sequence_keys)
+
     # Assign rewards to the current task index
     perf_matrix[cur_task_indx] = means
     perf_std_matrix[cur_task_indx] = stds
 
+    # Log the performance matrix
     for j, m in enumerate(means):
         eval_w.writerow([
             str(args.trial_id),
@@ -213,7 +222,7 @@ if __name__ == "__main__":
         'MiniGrid-DoorKey-5x5-v0': 8, 
         'MiniGrid-Unlock-v0': 18, 
         # 'MiniGrid-KeyCorridorS3R1-v0': 12,
-        'MiniGrid-LavaGapS5-v0': 15
+        # 'MiniGrid-LavaGapS5-v0': 15
     }   
 
     pretrain_sequence = {
@@ -236,7 +245,8 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Assign to GPU (or CPU if not connected)
-    device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
+    # device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
+    device = torch.device('cpu') # 'cpu' is actually faster in Gym at this small scale 
     print(f'Device: {device}')
 
     # Create the first batch of environments with the first environment listed in the curriculum

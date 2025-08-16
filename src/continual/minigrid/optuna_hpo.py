@@ -126,7 +126,7 @@ def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef,
                         raise optuna.TrialPruned(f"Pruned at ~{checkpoints[next_cp_idx]} steps (best={best:.3f})")
                     next_cp_idx += 1
 
-            # Optional trial-level timeout (keeps your old behavior)
+            # Prune the trial if the subprocess takes too long
             if timeout_sec and (time.time() - start_time) > timeout_sec:
                 proc.terminate()
                 try: proc.wait(timeout=5)
@@ -164,39 +164,32 @@ def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef,
     return run_dirs[-1] # Return the newest subdirectory containing the model
 
 def eval_sequence(model_dir):
-    # THIS IS FOR EVAL AFTER MODEL. NEW APPROACH JUST USES PERFORMANCE MATRIX
-    # device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
     config = json.loads((model_dir / 'config.json').read_text())
     sequence = list(config['sequence'].keys())
-
-    # agent = models.Agent(model_config).to(device)
-    # agent.eval() # Set to eval mode
-
-    # model_path = model_dir / 'final_model.pt'
-    # state = torch.load(model_path, map_location=device, weights_only=True)
-    # agent.load_state_dict(state)
-
-    # Get the mean eval reward of each task (across 10 episodes (default in mean_reward()))
-    # rewards = evaluation.mean_reward(agent, sequence, return_all=False)
 
     # Load the performance matrix associated with the model
     perf_matrix_path = model_dir / 'performance_matrix.npy'
     perf_matrix = np.load(perf_matrix_path)
 
-    weights = np.array([0.6, 0.25, 0.15])
-    # Iterate over each task in the sequence, and multiply results by the weights for that task.
-    # np.roll(weights, i) will shift weights to the right i number of times
-    # [0.6, 0.25, 0.15] will transform to [0.15, 0.6, 0.25] etc. 
-    # This will focus on the recently trained task to promote learning of all tasks
-    # While also gaining from potential forward or backward transfer
-    for i in range(len(sequence) - 1): 
-        perf_matrix[i] *= np.roll(weights, i)
+    threshold = 0.8 # Average return of .8 may be considered 'learned' for HPO sake
+    scores = []
+    # Iterate over the performance matrix to calculate a score for this trial. Penalize the model if it doesn't learn the task after it's trained on it
+    # All tasks need to be learned for fair evaluation
+    for t in range(len(sequence)):
+        row = perf_matrix[t] # Row of the current trained model
+        curr_val = row[t] # Value of the current trained task
+        seen_tasks_mean = float(perf_matrix[:t+1].mean()) # Mean of all tasks up to the current task only. 
 
-    # Get the sum of all weighted tasks combined for a single score
-    # Summing may provide slightly more variation than mean, giving Optuna an easier time maximizing score
-    score = np.sum(perf_matrix)
-    return float(score) # Score will be maximized by Optuna
+        # If the current task wasn't learned (less than .8 return average), add a penalty of -0.8, and double the result to really tell Optuna it's not a good result 
+        if curr_val < threshold:
+            score = (curr_val - threshold) * 2
+        # Otherwise, include any potential retention of tasks in the current score, to encourage retention
+        else:
+            score = seen_tasks_mean
+
+        scores.append(score)
+
+    return float(np.mean(scores)) # Score will be maximized by Optuna
 
 def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
 
@@ -205,11 +198,12 @@ def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
         # Select a set of hyperparameters for this trial
         # CfC models typically require higher ranges 
         if 'cfc' in model_type:
-            lr = trial.suggest_float("learning_rate", 1e-4, 2e-3, log=True)
+            lr = trial.suggest_float("learning_rate", 5e-5, 3e-4, log=True)
+            ent_coef = trial.suggest_float("ent_coef", 0.015, 0.04, log=True)
         else:
             lr = trial.suggest_float("learning_rate", 5e-5, 2.5e-3, log=True)
+            ent_coef = trial.suggest_float("ent_coef", 0.01, 0.03, log=True)
 
-        ent_coef = trial.suggest_float("ent_coef", 1e-4, 3e-2, log=True)
         hidden_dim = trial.suggest_categorical('hidden_dim', [128, 192, 256])
         hidden_state_dim = trial.suggest_categorical('hidden_state_dim', [96, 128, 192, 256])
         
