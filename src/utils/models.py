@@ -3,6 +3,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from ncps.torch import CfC
+from ncps.wirings import AutoNCP
 from torch.distributions.categorical import Categorical
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):

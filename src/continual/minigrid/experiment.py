@@ -23,6 +23,7 @@ def run_experiment(directory, file_name, name, args, conda_env='lnn_env'):
         command = [conda_exe, 'run', '-n', conda_env, 'python', directory + file_name] + args
         output = Popen(command, stdout=PIPE, stderr=STDOUT)
 
+        print(' '.join(command))
         # https://stackoverflow.com/questions/803265/getting-realtime-output-using-subprocess
         # Not real-time, but good enough for the purposes of this project
         while True:
@@ -48,7 +49,9 @@ def make_experiment(experiment_name, args):
         '--num-envs', '4',
         '--learning-rate', str(args['lr']),
         '--ent-coef', str(args['ent']),
+        '--hidden-dim', str(args['hidden-dim']),
         '--hidden-state-dim', str(args['hidden-state-dim']),
+        '--seed', str(args['seed'])
     ]
     
     # Not all conditions are always true, add only if used
@@ -104,16 +107,116 @@ def main():
         #     'cfc-critic': True,
         #     'use-lstm': False
         # },
+        # {
+        #     'name': 'LSTM',
+        #     'hidden-dim': 64,
+        #     'hidden-state-dim': 128,
+        #     'lr': 1e-4,
+        #     'ent': 0.03,
+        #     'ewc': False,
+        #     'clear': False,
+        #     'cfc-actor': False,
+        #     'cfc-critic': False,
+        #     'use-lstm': True
+        # },
+        # {
+        #     'name': 'LNN',
+        #     'hidden-dim': 64,
+        #     'hidden-state-dim': 128,
+        #     'lr': 1e-4,
+        #     'ent': 0.03,
+        #     'ewc': False,
+        #     'clear': False,
+        #     'cfc-actor': True,
+        #     'cfc-critic': True,
+        #     'use-lstm': False
+        # },
+        # {
+        #     'name': 'LSTM',
+        #     'hidden-dim': 128,
+        #     'hidden-state-dim': 128,
+        #     'lr': 1e-4,
+        #     'ent': 0.03,
+        #     'ewc': False,
+        #     'clear': False,
+        #     'cfc-actor': False,
+        #     'cfc-critic': False,
+        #     'use-lstm': True
+        # },
+        # {
+        #     'name': 'LNN',
+        #     'hidden-dim': 128,
+        #     'hidden-state-dim': 128,
+        #     'lr': 1e-4,
+        #     'ent': 0.03,
+        #     'ewc': False,
+        #     'clear': False,
+        #     'cfc-actor': True,
+        #     'cfc-critic': True,
+        #     'use-lstm': False
+        # },
+        # {
+        #     'name': 'LSTM',
+        #     'hidden-dim': 256,
+        #     'hidden-state-dim': 128,
+        #     'lr': 1e-4,
+        #     'ent': 0.03,
+        #     'ewc': False,
+        #     'clear': False,
+        #     'cfc-actor': False,
+        #     'cfc-critic': False,
+        #     'use-lstm': True
+        # },
+        # {
+        #     'name': 'LNN',
+        #     'hidden-dim': 256,
+        #     'hidden-state-dim': 128,
+        #     'lr': 1e-4,
+        #     'ent': 0.03,
+        #     'ewc': False,
+        #     'clear': False,
+        #     'cfc-actor': True,
+        #     'cfc-critic': True,
+        #     'use-lstm': False
+        # },
+        # {
+        #     'name': 'LNN',
+        #     'hidden-dim': 128,
+        #     'hidden-state-dim': 128,
+        #     'lr': 0.000163612117862951,
+        #     'ent': 0.01770551230843089,
+        #     'ewc': False,
+        #     'clear': False,
+        #     'cfc-actor': True,
+        #     'cfc-critic': True,
+        #     'use-lstm': False,
+        #     'seed': 5
+        # },
+        # {
+        #     'name': 'LNN',
+        #     'hidden-dim': 128,
+        #     'hidden-state-dim': 128,
+        #     'lr': 0.000163612117862951,
+        #     'ent': 0.01770551230843089,
+        #     'ewc': False,
+        #     'clear': False,
+        #     'cfc-actor': True,
+        #     'cfc-critic': True,
+        #     'use-lstm': False,
+        #     'seed': 6
+        # },
         {
-            'name': 'LSTM',
-            'hidden-state-dim': 256,
-            'lr': 1e-4,
-            'ent': 0.03,
+            'name': 'LNN',
+            'hidden-dim': 128,
+            'hidden-state-dim': 128,
+            'lr': 0.000163612117862951,
+            'ent': 0.01770551230843089,
             'ewc': False,
             'clear': False,
-            'cfc-actor': False,
-            'cfc-critic': False,
-            'use-lstm': True
+            'cfc-actor': True,
+            'cfc-critic': True,
+            'use-lstm': False,
+            'seed': 7
         },
         # {
         #     'name': 'LSTM - EWC',
@@ -172,6 +275,8 @@ def main():
         run_experiment(directory, file_name, e['name'], e['args'])
 
     print(f'Total runtime: {datetime.timedelta(seconds=time.time() - total_runtime_start)}')
+    # Alert the end
+    print('\a')
 
 if __name__ == '__main__':
     main()

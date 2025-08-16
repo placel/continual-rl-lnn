@@ -7,11 +7,16 @@ import minigrid
 import gymnasium as gym
 import time
 import datetime
+import pandas as pd
+
+"""
+THIS SHOULD'VE BEEN A CLASS, NOT STATIC
+"""
 
 # Iterate over every environment and play each 10 times to aquire perfromance
 # Returns a list of average rewards for each environment 
 # If doing few_shot learning in the future (more meta-learning) set few_shot to k trainable steps
-def mean_reward(agent, envs, episodes=10, step_name='step', dir='results', render_mode=None):
+def mean_reward(agent, envs, episodes=10, return_all=True, render_mode=None):
     
     # List of possible actions the model can take. Used for debugging
     action_list = [
@@ -25,16 +30,20 @@ def mean_reward(agent, envs, episodes=10, step_name='step', dir='results', rende
     ]
     # Extract the device 
     device = next(agent.parameters()).device
-    rewards = []
+    rewards, stds, all_returns = [], [], []
     # Loop over every environment
     for env_id in envs:
 
         env = gym.make(env_id, render_mode=render_mode)
         total_reward = []
 
+        # Initial seeding
+        state, _ = env.reset(seed=45)
         # Run each environment 10 times
-        for _ in range(episodes):
-            state, _ = env.reset()
+        for i in range(episodes):
+            if i > 0:
+                state, _ = env.reset() # Don't overwrite the initial seed if not the first task
+            
             done = False
             action_buffer = []
             episode_reward = 0.0 # Keep track of total reward throughout episode
@@ -75,10 +84,20 @@ def mean_reward(agent, envs, episodes=10, step_name='step', dir='results', rende
 
             total_reward.append(episode_reward) # Append the episode reward for averaging later
 
-        mean_reward = np.mean(total_reward) # Average out the current environments reward
-        rewards.append(mean_reward) # append reward to total rewards array
-    
-    return np.array(rewards) # Return rewards as numpy array
+        # mean_reward = np.mean(total_reward) # Average out the current environments reward
+        total_reward = np.asarray(total_reward, dtype=np.float32)
+
+        mean = float(total_reward.mean())
+        std  = float(total_reward.std(ddof=1))
+
+        rewards.append(mean)
+        stds.append(std)
+        all_returns.append(total_reward)
+
+    if return_all:
+        return np.array(rewards), np.array(stds), np.array(all_returns)
+    else:
+        return np.array(rewards) # Return rewards as numpy array
 
 # Follows the original paper (3,500 citations) instead of the 2018 revision (250 citation); just for coinsistency 
 def compute_fwt(perf_matrix, b):
@@ -113,7 +132,8 @@ def plot_perf_matrix(perf_matrix, sequence=None, save_path='./performance_matrix
 
     # Reverse the sequence and convert to list to display as the y_tick labels
     plt.figure(figsize=(6, 5))
-    sns.heatmap(perf_matrix, annot=True, fmt='.2f', cmap='viridis', xticklabels=labels, yticklabels=labels)
+    plt.style.use('fivethirtyeight')
+    sns.heatmap(perf_matrix, annot=True, fmt='.2f', cmap='GnBu', xticklabels=labels, yticklabels=labels)
     plt.title('Performance Matrix')
     plt.xlabel('Eval Task')
     plt.ylabel('Train Task')
@@ -123,6 +143,7 @@ def plot_perf_matrix(perf_matrix, sequence=None, save_path='./performance_matrix
 
 def plot_metrics(fwt, bwt, mean_reward, save_path='./metrics'):
     plt.figure()
+    plt.style.use('fivethirtyeight')
     bars = plt.bar(['Forward Transfer', 'Backward Transfer', 'Mean Reward'], [fwt, bwt, mean_reward])
 
     # Annotating bars: https://www.geeksforgeeks.org/python/how-to-annotate-bars-in-barplot-with-matplotlib-in-python/
@@ -134,4 +155,125 @@ def plot_metrics(fwt, bwt, mean_reward, save_path='./metrics'):
     plt.tight_layout()
     plt.plot()
     plt.savefig(save_path)
+    plt.close()
+
+def extract_task_names(sequence):
+    return [tasks.split('-')[1] for tasks in sequence]
+
+# Plot the reward at the end of training
+def plot_reward(path, sequence, save_path='./rewards.svg'):
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import pandas as pd
+    
+    sequence = extract_task_names(sequence)
+    # Load the models associated 'episodes.csv' file
+    df = pd.read_csv(f'{path}/episodes.csv')
+    
+    # Set up modern styling
+    plt.style.use('fivethirtyeight')
+    _, ax = plt.subplots(figsize=(12, 8))
+    
+    # Modern color palette
+    colors = ['#1f77b4', '#ff7f0e', "#25a325", "#d61e1e", '#9467bd']
+    
+    # Extract the timestep and boundaries
+    task_boundaries_steps = [list(df[df['task_index'] == i]['global_step'])[0] for i in range(len(sequence))]
+    
+    # Extract and plot x & y coordinates with better styling
+    x, y = df['global_step'], df['episodic_return']
+    ax.plot(x, y, linewidth=2.5, alpha=0.8, color=colors[0], zorder=3)
+    
+    # Add vertical lines with modern styling
+    for indx, task in enumerate(sequence):
+        if indx == 0: continue
+        ax.axvline(x=task_boundaries_steps[indx], color=colors[indx], linestyle='dashed', 
+                  linewidth=2, alpha=0.7, zorder=2, label=f'{sequence[indx-1]}→{task}')
+    
+    # Improved styling
+    ax.set_xlabel('Total Timesteps', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Episodic Return', fontsize=14, fontweight='bold')
+    ax.set_title('Training Reward - Best HPO Trial', fontsize=16, fontweight='bold', pad=20)
+    
+    # Better grid and background
+    ax.grid(True, alpha=0.75, linestyle='dashed', linewidth=0.5)
+    ax.set_facecolor('#fafafa')
+    
+    # Modern legend
+    legend = ax.legend(loc='lower right', frameon=True, fancybox=True, shadow=True, fontsize=12)
+    legend.get_frame().set_facecolor('white')
+    legend.get_frame().set_alpha(0.9)
+    
+    # Clean spines
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_linewidth(1.5)
+    ax.spines['bottom'].set_linewidth(1.5)
+    
+    # Set proper margins
+    ax.margins(0)
+    ax.set_ylim(0, 1)
+    # Better tick labels
+    ax.tick_params(axis='both', which='major', labelsize=12)
+    
+    plt.tight_layout()
+    
+    plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+    plt.close()
+
+# Plot the loss at the end of training
+def plot_loss_curve(path, sequence, save_path='./rewards.svg'):
+    sequence = extract_task_names(sequence)
+    # Load the models associated 'updates.csv' file
+    df = pd.read_csv(f'{path}/updates.csv')
+    
+    # Set up modern styling
+    plt.style.use('fivethirtyeight')
+    _, ax = plt.subplots(figsize=(12, 8))
+    
+    # Modern color palette
+    colors = ['#1f77b4', '#ff7f0e', "#25a325", "#d61e1e", '#9467bd']
+    
+    # Extract the timestep and boundaries
+    task_boundaries_steps = [list(df[df['task_index'] == i]['global_step'])[0] for i in range(len(sequence))]
+    
+    # Extract and plot x & y coordinates with better styling
+    x, y = df['global_step'], df['policy_loss']
+    ax.plot(x, y, linewidth=2.5, alpha=0.8, color=colors[0], zorder=3)
+    
+    # Add vertical lines with modern styling
+    for indx, task in enumerate(sequence):
+        if indx == 0: continue
+        ax.axvline(x=task_boundaries_steps[indx], color=colors[indx], linestyle='dashed', 
+                  linewidth=2, alpha=0.7, zorder=2, label=f'{sequence[indx-1]}→{task}')
+    
+    # Improved styling
+    ax.set_xlabel('Total Timesteps', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Policy Loss', fontsize=14, fontweight='bold')
+    ax.set_title('Training Loss - Best HPO Trial', fontsize=16, fontweight='bold', pad=20)
+    
+    # Better grid and background
+    ax.grid(True, alpha=0.75, linestyle='dashed', linewidth=0.5)
+    ax.set_facecolor('#fafafa')
+    
+    # Modern legend
+    legend = ax.legend(loc='upper right', frameon=True, fancybox=True, shadow=True, fontsize=12)
+    legend.get_frame().set_facecolor('white')
+    legend.get_frame().set_alpha(0.9)
+    
+    # Clean spines
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_linewidth(1.5)
+    ax.spines['bottom'].set_linewidth(1.5)
+    
+    # Set proper margins
+    # ax.margins(0)
+    # ax.set_ylim(0, 1)
+    # Better tick labels
+    ax.tick_params(axis='both', which='major', labelsize=12)
+    
+    plt.tight_layout()
+    
+    plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close()

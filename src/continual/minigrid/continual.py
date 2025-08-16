@@ -16,6 +16,7 @@ import tyro
 import datetime
 from collections import deque # used for buffer determining early stopping
 from torch.utils.tensorboard import SummaryWriter
+from typing import Optional
 
 import pathlib
 import sys
@@ -32,6 +33,8 @@ from utils import models # Custom class containing definitions for the main mode
 class Args:
     # Experiment Name
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
+    # Trial number (for HPO)
+    trial_id: str = None
     # Accepts a string and will create a txt file to define the current experiment
     exp_def: str = "Testing baseline model" 
     # Seed of the experiemnt (for reproduction)
@@ -55,12 +58,16 @@ class Args:
     use_lstm: bool = False
     # Size of hidden dimensions 
     hidden_dim: int = 64
-    # Size of the reccurent states
-    hidden_state_dim: int = 128
+    # Size of the reccurent states.  
+    hidden_state_dim: Optional[int] = 128
     # Toggle early stopping (es)
     es_flag: bool = False
+    # Restore weights with Early Stopping (generally False)
+    es_restore_weights: bool = False
     # Toggle Elastic Weight Consolidation (EWC)
     ewc: bool = False
+    # Load pretrained model
+    pretrained_model: str = None
 
     # ALGORITHM ARGS
     # Name of the environment
@@ -137,9 +144,22 @@ def end_environment(cur_task_indx, es_triggered=False):
     print(f'Environment training time: {datetime.timedelta(seconds=time.time() - sequence_start_time)}')
 
     # Calculate average reward per environment
-    rewards = evaluation.mean_reward(agent, sequence_keys)
+    means, stds, _ = evaluation.mean_reward(agent, sequence_keys)
     # Assign rewards to the current task index
-    perf_matrix[cur_task_indx] = rewards
+    perf_matrix[cur_task_indx] = means
+    perf_std_matrix[cur_task_indx] = stds
+
+    for j, m in enumerate(means):
+        eval_w.writerow([
+            str(args.trial_id),
+            int(cur_task_indx),
+            int(j),
+            float(m), 
+            int(10),       # Fixed (see evaluation.py)
+            int(42),       # Fixed (see evaluation.py)
+            time.time() - master_start_time
+        ])
+        eval_f.flush() 
 
     # If EWC is enabled, compute it's loss
     if args.ewc:
@@ -181,24 +201,29 @@ if __name__ == "__main__":
         '|param|value|\n|-|-|\n%s' % ('\n'.join([f'|{key}|{value}|' for key, value in vars(args).items()]))
     )
 
-    # sequence = {
-    #     'MiniGrid-Empty-5x5-v0': 4,
-    #     # 'MiniGrid-Empty-Random-5x5-v0',
-    #     # 'MiniGrid-Empty-Random-5x5-v0': 3,
-    #     'MiniGrid-DoorKey-5x5-v0': 10, ################ This one
-    #     # 'MiniGrid-Empty-Random-6x6-v0': 5,
-    #     # 'MiniGrid-DoorKey-6x6-v0': 12,
-    #     # 'MiniGrid-Empty-16x16-v0',
-    #     # 'MiniGrid-Empty-16x16-v0',
-    #     # 'MiniGrid-FourRooms-v0'
-    #     'MiniGrid-Unlock-v0': 12 ##################### THis one
-    #     # 'MiniGrid-KeyCorridorS3R2-v0': 12,
-    #     # 'MiniGrid-KeyCorridorS3R1-v0': 10
-    # }   
-
-    sequence = {
-        args.env_id: 0
+    ppo_hyperparameters = {
+        'total_timesteps': args.total_timesteps,
+        'lr': args.learning_rate,
+        'ent_coef': args.ent_coef,
     }
+
+    # Environment: early_stopping weight times
+    sequence = {
+        'MiniGrid-Empty-5x5-v0': 5,
+        'MiniGrid-DoorKey-5x5-v0': 8, 
+        'MiniGrid-Unlock-v0': 18, 
+        # 'MiniGrid-KeyCorridorS3R1-v0': 12,
+        'MiniGrid-LavaGapS5-v0': 15
+    }   
+
+    pretrain_sequence = {
+        'MiniGrid-KeyCorridor-v0': 12,
+        'MiniGrid-LavaGapS5-v0': 12
+    }  
+
+    # sequence = {
+    #     args.env_id: 0
+    # }
 
     # Create a list of environment keys. Prevents the need for manually managing two env_id and patience lists
     sequence_keys = list(sequence.keys())
@@ -226,8 +251,13 @@ if __name__ == "__main__":
     # Confirm the action space is Discrete (left, right, etc.), no Continuous 
     assert isinstance(envs.single_action_space, gym.spaces.Discrete) # Only disscrete action space is supported here
 
-    model_name = f"a={args.cfc_actor}_c={args.cfc_critic}{'_ewc' if args.ewc else ''}_{int(time.time())}"
-    model_path = f'{os.path.dirname(__file__)}/experiments/{args.exp_name}/models/{model_name}'
+    # Pick the right path depending on if the run is for HPO or Experiments
+    if args.trial_id is None:
+        model_name = f"a={args.cfc_actor}_c={args.cfc_critic}{'_ewc' if args.ewc else ''}_{int(time.time())}"
+        model_path = f'{os.path.dirname(__file__)}/experiments/{args.exp_name}/models/{model_name}'    
+    else:
+        model_name = f"hpo_trial_{args.trial_id}"
+        model_path = f'{os.path.dirname(__file__)}/HPO/{args.exp_name}/models/{model_name}'  
     pathlib.Path(model_path).mkdir(parents=True, exist_ok=True) # Create the path
 
     # Create the agent
@@ -250,6 +280,7 @@ if __name__ == "__main__":
     if args.use_lstm:
         print(f'Using LSTM')
 
+
     agent = models.Agent(model_config).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
@@ -258,26 +289,46 @@ if __name__ == "__main__":
     with open(f'{model_path}/config.json', 'w') as f: # 'x' creates the file
         combined_config = {
             'model_config': model_config,
+            'ppo_hyperparameters': ppo_hyperparameters,
             'sequence': sequence
         }
         json.dump(combined_config, f, indent=2)
 
     # CLAUDE CODE BELOW - > MAKE SEXIER LATER
-    log_file = f'{model_path}/training_log_{args.exp_name}_{args.seed}.csv'
+    rollout_log_file = f'{model_path}/training_log_{args.exp_name}_{args.seed}.csv'
     import csv
-    # Initialize CSV file
-    if not os.path.exists(log_file):
-        csv_file = open(log_file, 'w', newline='')
-        csv_writer = csv.writer(csv_file)
-        csv_writer.writerow(['global_step', 'task_step', 'env', 'episodic_return', 'episodic_length'])
+    # # Initialize CSV file
+    # if not os.path.exists(rollout_log_file):
+    #     csv_file = open(rollout_log_file, 'w', newline='')
+    #     csv_writer = csv.writer(csv_file)
+    #     csv_writer.writerow(['global_step', 'task_step', 'env', 'episodic_return', 'episodic_length'])
+    
+    # Create csv logging files for rollout episodes, updates, and evaluations
+    # Return File object, and the opened 'writer' function for direct logging (faster)
+    def make_writer(path, header):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        f = open(path, "a", newline="")
+        w = csv.writer(f)
+        if f.tell() == 0:
+            w.writerow(header)
+        return f, w
 
+    episode_f, episode_w = make_writer(f'{model_path}/episodes.csv',
+        ["trial_id","task_index","global_step","task_step","env_id","seed","episodic_return","episodic_length","wall_time"])
+
+    update_f, update_w = make_writer(f'{model_path}/updates.csv',
+        ["trial_id","task_index","global_step", "policy_loss","value_loss","entropy","approx_kl","clipfrac",
+        "explained_var","lr","sps","wall_time"])
+
+    eval_f, eval_w = make_writer(f'{model_path}/evals.csv',
+        ["trial_id","task_index","eval_task","mean_return","n_episodes","seed","wall_time"])
 
     # Collect baseline model performance (performance with no training)
     # This is needed to compute Forward Transfer
     # Returns mean reward for each task
     baselines = []
     print('Collecting random baselines...')
-    # baselines = evaluation.mean_reward(agent, sequence_keys)
+    baselines = evaluation.mean_reward(agent, sequence_keys, return_all=False)
 
     if args.ewc:
         from utils.stabilization import ElasticWeightConsolidation
@@ -324,6 +375,7 @@ if __name__ == "__main__":
     es_triggered = False
     # Keep track of average rewards per task 
     perf_matrix = np.zeros((len(sequence_keys), len(sequence_keys)))
+    perf_std_matrix = np.zeros((len(sequence_keys), len(sequence_keys)))
     early_stopping_interval = 10
     # Iterate over each environment within the curriculum and train the model
     for indx, cur_env in enumerate(sequence_keys):
@@ -334,7 +386,7 @@ if __name__ == "__main__":
         
         if args.es_flag:
             # initialize the EarlyStopping class at start of every episode to ensure no overlap between task performance
-            es_monitor = EarlyStopping(patience=sequence[cur_env], min_delta=0.01, mode='max', verbose=True, restore_weights_flag=True) 
+            es_monitor = EarlyStopping(patience=sequence[cur_env], min_delta=0.01, mode='max', verbose=True, restore_weights_flag=args.es_restore_weights) 
 
         # The first batch is created before this loop. If not the first batch, 
         # create the next batch of environments associated with the current curriculum environment
@@ -402,7 +454,7 @@ if __name__ == "__main__":
                     action, logprob, _, value, new_cfc_state, new_lstm_states, _ = agent.get_action_and_value(next_obs['image'], cfc_state, lstm_states)
 
                     # If CfC is used, Update the states with new states, resetting hidden states where the next_state is terminal
-                    if not new_cfc_state == None:
+                    if not new_cfc_state is None:
                         new_cfc_state = new_cfc_state * (1.0 - next_done.unsqueeze(1))
                         cfc_state = new_cfc_state
 
@@ -434,19 +486,26 @@ if __name__ == "__main__":
                 next_done = torch.Tensor(next_done).to(device)
 
                 # Log the rewards after each episode of every environment ends
+                # Easier environments finish much faster after being learned (Empty is only 5 steps and learns instantly)
+                # so the easier tasks are logged more often. This doesn't affect training though
                 if "episode" in infos and "_episode" in infos:
                     for i, finished in enumerate(infos["_episode"]):
                         if finished:
-                            csv_writer.writerow([
-                                global_step,
-                                env_step_count, 
-                                i,
-                                infos['episode']['r'][i].item(),
-                                infos['episode']['l'][i].item()
+                            episode_w.writerow([
+                                str(args.trial_id),
+                                int(indx),
+                                int(global_step),
+                                int(env_step_count),
+                                str(cur_env),
+                                int(args.seed),
+                                float(infos['episode']['r'][i]),
+                                int(infos['episode']['l'][i]),
+                                time.time() - master_start_time
                             ])
-                            csv_file.flush()  # Ensure data is written immediately
+                            # Only flush occasionally, not every row (faster)
+                            if global_step % 256 == 0: episode_f.flush()
 
-                            print(f"global_step={global_step}, task_step={env_step_count}, env={i}, episodic_return={infos['episode']['r'][i]}", flush=True)
+                            print(f"global_step={global_step}, task_step_{indx}={env_step_count}, env={i}, episodic_return={infos['episode']['r'][i]}", flush=True)
                             writer.add_scalar("charts/episodic_return", infos['episode']['r'][i], global_step)
                             writer.add_scalar("charts/episodic_length", infos['episode']['l'][i], global_step)
 
@@ -534,12 +593,6 @@ if __name__ == "__main__":
                     else:
                         mb_cfc_states = None
 
-                    # if args.use_lstm:
-                    #     mb_lstm_states = (
-                    #         b_lstm_h_states[:, mb_inds].clone(),  # Keep (lstm_layers, minibatch, hidden) format
-                    #         b_lstm_c_states[:, mb_inds].clone()
-                    #     )
-
                     if args.use_lstm:
                         mb_lstm_states = (
                             b_lstm_h_states[mb_inds].transpose(0, 1).clone(),  # (mb, 1, hidden) -> (1, mb, hidden)
@@ -620,6 +673,24 @@ if __name__ == "__main__":
             # Also, what is this; find out
             explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
+            current_sps = int(global_step / (time.time() - master_start_time))
+
+            update_w.writerow([
+                str(args.trial_id),
+                int(indx),
+                int(global_step),
+                float(pg_loss.item()),
+                float(v_loss.item()),
+                float(entropy_loss.item()),
+                float(approx_kl.item()),
+                float(np.mean(clip_fracs)),
+                float(explained_var),
+                float(optimizer.param_groups[0]["lr"]), # Capture the annealing lr, not args.lr
+                float(current_sps),
+                time.time() - master_start_time 
+            ])
+            if indx % 64 == 0: update_f.flush()
+
             # Copied for logging
             # TRY NOT TO MODIFY: record rewards for plotting purposes
             writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
@@ -630,8 +701,8 @@ if __name__ == "__main__":
             writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
             writer.add_scalar("losses/clipfrac", np.mean(clip_fracs), global_step)
             writer.add_scalar("losses/explained_variance", explained_var, global_step)
-            print("SPS:", int(global_step / (time.time() - master_start_time)))
-            writer.add_scalar("charts/SPS", int(global_step / (time.time() - master_start_time)), global_step)
+            print("SPS:", current_sps)
+            writer.add_scalar("charts/SPS", current_sps, global_step)
             
             # EARLY STOPPING
             # If early stopping is enabled, check if model training on current task should end
@@ -644,7 +715,8 @@ if __name__ == "__main__":
                 es_triggered = es_monitor.update(es_mean[0], model=agent)
 
                 if es_triggered:
-                    es_monitor.restore_weights(agent)
+                    if args.es_restore_weights:
+                        es_monitor.restore_weights(agent)
                     end_environment(indx, es_triggered)
                     break
 
@@ -655,18 +727,33 @@ if __name__ == "__main__":
         # Reset early stopping flag for next env
         es_triggered = False
     
-    print('Computing Metrics...')
-    # fwt = evaluation.compute_fwt(perf_matrix, baselines)
-    # bwt = evaluation.compute_bwt(perf_matrix)
-    # Take the mean of all averaged rewards to get a singular average
-    # mean_reward = np.mean(evaluation.mean_reward(agent, sequence_keys))
-
-    evaluation.plot_perf_matrix(perf_matrix, sequence=sequence_keys, save_path=f'{model_path}/performance_matrix.svg') # Save as SVG to prevent blur
-    # evaluation.plot_metrics(fwt, bwt, mean_reward, save_path=f'{model_path}/metrics.svg')
-
-    print(f'Final training time: {datetime.timedelta(seconds=time.time() - master_start_time)}')
+    # Close open files
     envs.close()
     writer.close()
-    if csv_file:
-        csv_file.close()
+    episode_f.close()
+    update_f.close()
+    eval_f.close()
+    
+    print('Computing Metrics...')
+    fwt = evaluation.compute_fwt(perf_matrix, baselines)
+    bwt = evaluation.compute_bwt(perf_matrix)
+    # Take the mean of all averaged rewards to get a singular average
+    rewards, _, _ = evaluation.mean_reward(agent, sequence_keys)
+    mean_reward = np.mean(rewards)
+
+
+    # Make plots and save in current directory
+    evaluation.plot_perf_matrix(perf_matrix, sequence=sequence_keys, save_path=f'{model_path}/performance_matrix.svg') # Save as SVG to prevent blur
+    evaluation.plot_metrics(fwt, bwt, mean_reward, save_path=f'{model_path}/metrics.svg')
+    evaluation.plot_reward(path=model_path, sequence=sequence_keys, save_path=f'{model_path}/reward.svg')
+    evaluation.plot_loss_curve(path=model_path, sequence=sequence_keys, save_path=f'{model_path}/loss.svg')
+
+    # Save the performance matrix as a NumPy array
+    np.save(f'{model_path}/performance_matrix.npy', perf_matrix)
+
+    print(f'Final training time: {datetime.timedelta(seconds=time.time() - master_start_time)}')
+    
+
     torch.save(agent.state_dict(), f'{model_path}/final_model.pt')
+    # Print a BEL character to screen. Will play an audible sound in terminal indicating it's done
+    print('\a')

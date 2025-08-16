@@ -1,22 +1,26 @@
 EXPERIMENT RUN FILE
+conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
 python ./src/continual/minigrid/experiment.py
 
+HPO RUN
 
-
+conda activate lnn_env
+cd Documents/School/Wales/MSc/continual-rl-lnn
+python ./src/continual/minigrid/optuna_hpo.py --study-name mlp_hpo --trials 3 --total-timesteps 50_000 --model-type mlp
 
 LNN Actor & Critic:
 
 conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
-python ./src/continual/minigrid/continual.py --num-envs 4 --cfc-actor --cfc-critic --learning-rate 1e-4 --ent-coef 0.03
+python ./src/continual/minigrid/continual.py --num-envs 4 --hidden-dim 128 --hidden-state-dim 96 --cfc-actor --cfc-critic --learning-rate 0.0011416503524392856 --ent-coef 0.020126507648761567
 
 
 Baseline LSTM:
 
 conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
-python ./src/continual/minigrid/continual.py --num-envs 4 --hidden-state-dim 256 --use-lstm --learning-rate 1e-4 --ent-coef 0.03
+python ./src/continual/minigrid/continual.py --num-envs 4 --hidden-state-dim 128 --hidden-dim 128 --use-lstm --learning-rate 1e-4 --ent-coef 0.03
 
 
 Baseline:
