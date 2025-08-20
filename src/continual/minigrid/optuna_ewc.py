@@ -103,39 +103,39 @@ def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef,
         recent_returns = deque(maxlen= max(10, 2))  # keep it tiny; trainer logs often
         start_time = time.time()
 
-        # In-depth pruning logic below. 
-        # Only check for pruning on seed 1 to rule out bad starts. Keep other seeds for verification. Much simpler than cross-seed pruning
-        if seed_indx == 0:
-            for line in iter(proc.stdout.readline, ''):
-                if not line:
-                    break
-                file.write(line)
+        # The proc must be read, otherwise the buffer will reach a maximum length and freeze the terminal and training
+        for line in iter(proc.stdout.readline, ''):
+            if not line:
+                break
+            file.write(line)
 
-                m = METRIC_RE.search(line)  # matches global_step=..., episodic_return=...
-                if m:
-                    step = int(m.group(1))               # global_step 
-                    ep_ret = float(m.group(2))           # episodic_return in 0-1 for MiniGrid
-                    recent_returns.append(ep_ret)
+            # Trial Pruning Logic
+            m = METRIC_RE.search(line)  # matches global_step=..., episodic_return=...
+            # Only check for pruning on seed 1 to rule out bad starts. Keep other seeds for verification. Much simpler than cross-seed pruning
+            if m and seed_indx == 0:
+                step = int(m.group(1))               # global_step 
+                ep_ret = float(m.group(2))           # episodic_return in 0-1 for MiniGrid
+                recent_returns.append(ep_ret)
 
-                    # Hit rungs at 25/50/75% of T (per task)
-                    if next_cp_idx < len(checkpoints) and step >= checkpoints[next_cp_idx]:
-                        # smooth a bit, then make it monotone with best-so-far
-                        smoothed = sum(recent_returns)/len(recent_returns)
-                        best = max(best, smoothed)
-                        trial.report(best, step=step)
-                        if trial.should_prune():
-                            proc.terminate()
-                            try: proc.wait(timeout=5)
-                            except: proc.kill()
-                            raise optuna.TrialPruned(f"Pruned at ~{checkpoints[next_cp_idx]} steps (best={best:.3f})")
-                        next_cp_idx += 1
+                # Hit rungs at 25/50/75% of T (per task)
+                if next_cp_idx < len(checkpoints) and step >= checkpoints[next_cp_idx]:
+                    # smooth a bit, then make it monotone with best-so-far
+                    smoothed = sum(recent_returns)/len(recent_returns)
+                    best = max(best, smoothed)
+                    trial.report(best, step=step)
+                    if trial.should_prune():
+                        proc.terminate()
+                        try: proc.wait(timeout=5)
+                        except: proc.kill()
+                        raise optuna.TrialPruned(f"Pruned at ~{checkpoints[next_cp_idx]} steps (best={best:.3f})")
+                    next_cp_idx += 1
 
-            # Prune the trial if the subprocess takes too long
-            if timeout_sec and (time.time() - start_time) > timeout_sec:
-                proc.terminate()
-                try: proc.wait(timeout=5)
-                except: proc.kill()
-                raise optuna.TrialPruned(f"Trial timed out after {timeout_sec}s")
+        # Prune the trial if the subprocess takes too long
+        if timeout_sec and (time.time() - start_time) > timeout_sec:
+            proc.terminate()
+            try: proc.wait(timeout=5)
+            except: proc.kill()
+            raise optuna.TrialPruned(f"Trial timed out after {timeout_sec}s")
 
         proc.wait()
         if proc.returncode != 0:

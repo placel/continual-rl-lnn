@@ -20,7 +20,7 @@ Baseline LSTM:
 
 conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
-python ./src/continual/minigrid/continual.py --num-envs 4 --hidden-state-dim 128 --hidden-dim 256 --use-lstm --learning-rate 0.001686566615826345 --ent-coef 0.02707879112681343
+python ./src/continual/minigrid/continual.py --num-envs 4 --hidden-state-dim 128 --hidden-dim 128 --use-lstm --learning-rate 0.0011001437866728792 --ent-coef 0.029626504303054173
 
 
 Baseline:

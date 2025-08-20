@@ -292,7 +292,7 @@ def main():
     print('-'*60)
     print(f'Best Value: {study.best_value}\n')
     print(f'Best Params: {study.best_params}\n')
-    print(f'Best model_dir: {study.best_trial.user_attrs.get("model_dir")}\n')
+    print(f'Best model_dirs: {study.best_trial.user_attrs.get("model_dirs")}\n')
     print('-'*60)
     print('\n')
     
