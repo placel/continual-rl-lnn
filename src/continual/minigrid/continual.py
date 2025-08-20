@@ -300,7 +300,7 @@ if __name__ == "__main__":
         'critic_cfc': bool(args.cfc_critic),
         'use_lstm': bool(args.use_lstm),
         'ewc': bool(args.ewc),
-        'ewc_weight': bool(args.ewc_weight),
+        'ewc_weight': float(args.ewc_weight),
         'seed': int(args.seed)
     }
 
@@ -661,15 +661,17 @@ if __name__ == "__main__":
                         v_loss = 0.5 * ((new_value - b_returns[mb_inds]) ** 2).mean()
 
                     entropy_loss = entropy.mean()
-                    # what is this; find out
                     loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
 
                     if args.ewc:
-                        # If still on the first task, don't compute EWC loss
-                        if indx > 0:
+                        if indx > 0: # If still on the first task, don't compute EWC loss
                             # Apply Elastic Weight Consolidation
-                            print(f'Total loss: {loss}')
-                            loss += ewc.compute_ewc_loss() # Is 0.0 on first run, but updates over time
+                            ewc_loss = ewc.compute_ewc_loss() # Is 0.0 on first run, but updates over time
+                            # Since EWC strength is so large, scale it as a ration, but don't let it beat PPO loss
+                            scale = min(1.0, (loss.detach().abs() / (ewc_loss.detach() + 1e-8)).item())
+                            R_abs = (ewc_loss.detach() / (loss.detach().abs() + 1e-8)).item()
+                            print(f"R_abs: {R_abs:.3f}")
+                            loss = loss + (scale * ewc_loss)
 
                     # Apply learning to agent
                     optimizer.zero_grad()

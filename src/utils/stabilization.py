@@ -4,8 +4,6 @@ from torch import autograd
 import torch.nn.functional as F
 import time
 
-# TODO
-# create EWC, SI, and CLEAR methods/classes
 # Adpoted for PPO by https://github.com/shivamsaboo17/Overcoming-Catastrophic-forgetting-in-Neural-Networks/blob/master/elastic_weight_consolidation.py
 class ElasticWeightConsolidation:
 

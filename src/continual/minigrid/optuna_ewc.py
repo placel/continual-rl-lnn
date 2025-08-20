@@ -191,20 +191,20 @@ def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
             ent_coef = 0.02472512725852833
             hidden_dim = 128
             hidden_state_dim = 256
+            ewc_weight = trial.suggest_float("ewc_weight", 1e4, 5e5, log=True)
         # CHANGE THE BELOW ONCE HPO FINISHES
         elif 'lstm' in model_type:
             lr = 0.00029897916838103204
             ent_coef = 0.02472512725852833
             hidden_dim = 128
             hidden_state_dim = 256
+            ewc_weight = trial.suggest_float("ewc_weight", 1e6, 2e8, log=True)
         if model_type == 'mlp':
             lr = 0.0012466997728671529
             ent_coef = 0.02676345769317956
             hidden_dim = 128
             hidden_state_dim = None
-
-        # Range from 20 (small) to original paper size 400 (large, meant for Atari)
-        ewc_weight = trial.suggest_float("ewc_weight", 20, 400, log=True)
+            ewc_weight = trial.suggest_float("ewc_weight", 1e6, 2e8, log=True)
 
         seeds = [1001, 2002, 3003] # Unique HPO seeds
         seed_dirs = {}
