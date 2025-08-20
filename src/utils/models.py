@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from ncps.torch import CfC
+from ncps.torch import CfC, LTC
 from ncps.wirings import AutoNCP
 from torch.distributions.categorical import Categorical
 
@@ -28,11 +28,7 @@ class SharedEmbedding(nn.Module):
         # flattene image for prediction
         self.flatten = nn.Flatten()
         self.linear1 = nn.LazyLinear(hidden_dim)
-        
-        self.layer_norm = nn.LayerNorm(hidden_dim)
         self.linear2 = layer_init(nn.Linear(hidden_dim, hidden_dim))
-
-        # TODO Store model params in json or something
     
     def forward(self, image):
         
@@ -42,12 +38,11 @@ class SharedEmbedding(nn.Module):
         features = F.relu(self.conv2(features))
         features = F.relu(self.conv3(features))
 
-        # Flatten the image 
+        # # Flatten the image 
         features = self.flatten(features)
         features = F.relu(self.linear1(features))
 
         return features
-
 
 class SharedNetwork(nn.Module):
 
@@ -112,6 +107,7 @@ class CriticHead(nn.Module):
         # If we're using a CfC layer for the Actor Model, apply CfC
         # Otherwise use simple MLP
         if use_cfc:
+            # self.cfc1 = CfC(embedding_dim, hidden_state_dim, batch_first=True) # batch_first=True is required with the ncps library
             self.cfc1 = CfC(embedding_dim, hidden_state_dim, batch_first=True) # batch_first=True is required with the ncps library
             self.output = layer_init(nn.Linear(hidden_state_dim, 1), std=1.0)
         else:
@@ -260,7 +256,7 @@ class Agent(nn.Module):
 
         # If not using a shared network, pass states into critic separately (LNN_Actor XOR LNN_Critic)
         else:
-            value, _, _ = self.critic(image, cfc_states)
+            value, _ = self.critic(image, cfc_states)
             
         return value
     

@@ -18,6 +18,7 @@ from collections import deque # used for buffer determining early stopping
 from torch.utils.tensorboard import SummaryWriter
 from typing import Optional
 
+import csv
 import pathlib
 import sys
 import os
@@ -66,6 +67,8 @@ class Args:
     es_restore_weights: bool = False
     # Toggle Elastic Weight Consolidation (EWC)
     ewc: bool = False
+    # EWC Weight (hyperparameter)
+    ewc_weight: float = 0.0
     # Load pretrained model
     pretrained_model: str = None
 
@@ -73,7 +76,7 @@ class Args:
     # Name of the environment
     env_id: str = 'MiniGrid-Empty-5x5-v0'
     # Total timesteps allowed in the whole experiment
-    total_timesteps: int = 500_000
+    total_timesteps: int = 250_000
     # Learning rate for the optimizer
     learning_rate: float = 1.5e-4 # Better for CfC models
     # Number of environments for parallel game processing
@@ -140,10 +143,11 @@ def end_environment(cur_task_indx, es_triggered=False):
     # Calculate average reward per environment
     # If args.trial_id is not None, HPO is running, and an average across 3 different seed should be used
     if args.trial_id is not None:
-        seeds = [92, 73, 11]
+        seeds = [92, 73, 11] # HPO Seeds
+        # seeds = [22, 33, 44, 55, 66] # Experiment Seeds
         means, stds = [], []
-        for i in range(3):
-            mean, std, _ = evaluation.mean_reward(agent, sequence_keys, seed=seeds[i])
+        for s in seeds:
+            mean, std, _ = evaluation.mean_reward(agent, sequence_keys, seed=s)
             means.append(mean)
             stds.append(std)
 
@@ -151,6 +155,7 @@ def end_environment(cur_task_indx, es_triggered=False):
         means = np.stack(means).mean(axis=0)
         stds = np.stack(stds).std(axis=0, ddof=1)
     else:
+        seeds = None
         means, stds, _ = evaluation.mean_reward(agent, sequence_keys)
 
     # Assign rewards to the current task index
@@ -164,8 +169,8 @@ def end_environment(cur_task_indx, es_triggered=False):
             int(cur_task_indx),
             int(j),
             float(m), 
-            int(10),       # Fixed (see evaluation.py)
-            int(42),       # Fixed (see evaluation.py)
+            int(10),                                                # Fixed episode count (see evaluation.py)
+            str(seeds) if args.trial_id is None else int(42),       # If an experiment or HPO trial was evaluated on a list of seeds, log that, otherwise use static 42 (evaluation.py)
             time.time() - master_start_time
         ])
         eval_f.flush() 
@@ -178,7 +183,6 @@ def end_environment(cur_task_indx, es_triggered=False):
 
     # Save this version of the model (in case of crashes later on)
     torch.save(agent.state_dict(), f'{model_path}/{sequence_keys[cur_task_indx]}.pt')
-    # torch.save(agent.state_dict(), f'{model_path}/{sequence_keys[cur_task_indx]}-es_{es_triggered}.pt')
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -261,12 +265,28 @@ if __name__ == "__main__":
     # Confirm the action space is Discrete (left, right, etc.), no Continuous 
     assert isinstance(envs.single_action_space, gym.spaces.Discrete) # Only disscrete action space is supported here
 
+    # Pre-training prints
+    if args.cfc_actor and args.cfc_critic:
+        print('CfC A&C')
+        model_name = f"CfC_A&C{'_ewc' if args.ewc else ''}_{int(time.time())}"
+    elif args.cfc_actor and not args.cfc_critic:
+        print('CfC Actor')
+        model_name = f"CfC_Actor{'_ewc' if args.ewc else ''}_{int(time.time())}"
+    elif args.cfc_critic and not args.cfc_actor:
+        print('CfC Critic')
+        model_name = f"CfC_Critic{'_ewc' if args.ewc else ''}_{int(time.time())}"
+    elif args.use_lstm:
+        print('LSTM')
+        model_name = f"LSTM{'_ewc' if args.ewc else ''}_{int(time.time())}"
+    else:
+        print('MLP')
+        model_name = f"MLP{'_ewc' if args.ewc else ''}_{int(time.time())}"
+
     # Pick the right path depending on if the run is for HPO or Experiments
     if args.trial_id is None:
-        model_name = f"a={args.cfc_actor}_c={args.cfc_critic}{'_ewc' if args.ewc else ''}_{int(time.time())}"
         model_path = f'{os.path.dirname(__file__)}/experiments/{args.exp_name}/models/{model_name}'    
     else:
-        model_name = f"hpo_trial_{args.trial_id}"
+        model_name = f"hpo_trial_{args.trial_id}_{args.seed}"
         model_path = f'{os.path.dirname(__file__)}/HPO/{args.exp_name}/models/{model_name}'  
     pathlib.Path(model_path).mkdir(parents=True, exist_ok=True) # Create the path
 
@@ -279,17 +299,10 @@ if __name__ == "__main__":
         'actor_cfc': bool(args.cfc_actor),
         'critic_cfc': bool(args.cfc_critic),
         'use_lstm': bool(args.use_lstm),
-        'ewc': bool(args.ewc)
+        'ewc': bool(args.ewc),
+        'ewc_weight': bool(args.ewc_weight),
+        'seed': int(args.seed)
     }
-
-    # Pre-training prints
-    if args.cfc_actor:
-        print(f'CfC Actor')
-    if args.cfc_critic:
-        print(f'CfC Critic')
-    if args.use_lstm:
-        print(f'Using LSTM')
-
 
     agent = models.Agent(model_config).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
@@ -306,12 +319,6 @@ if __name__ == "__main__":
 
     # CLAUDE CODE BELOW - > MAKE SEXIER LATER
     rollout_log_file = f'{model_path}/training_log_{args.exp_name}_{args.seed}.csv'
-    import csv
-    # # Initialize CSV file
-    # if not os.path.exists(rollout_log_file):
-    #     csv_file = open(rollout_log_file, 'w', newline='')
-    #     csv_writer = csv.writer(csv_file)
-    #     csv_writer.writerow(['global_step', 'task_step', 'env', 'episodic_return', 'episodic_length'])
     
     # Create csv logging files for rollout episodes, updates, and evaluations
     # Return File object, and the opened 'writer' function for direct logging (faster)
@@ -340,14 +347,15 @@ if __name__ == "__main__":
     print('Collecting random baselines...')
     baselines = evaluation.mean_reward(agent, sequence_keys, return_all=False)
 
+    # EWC Initialization
     if args.ewc:
         from utils.stabilization import ElasticWeightConsolidation
-        ewc_strength = 100 # The original EWC Paper uses 400 inside of the Atari Suite with DQN for reference 
+        ewc_strength = args.ewc_weight # The original EWC Paper uses 400 inside of the Atari Suite with DQN for reference, That's probably too much
         ewc = ElasticWeightConsolidation(agent, ewc_strength)
         print(f'EWC Initialized with strength {ewc_strength}...')
 
     # Alogirthm Logic
-    #Storage
+    # Storage
     # Reshape the observation space to match the shape of the image (3, 7, 7) 
     image_shape = envs.single_observation_space['image'].shape
     permuted_image = (image_shape[2], image_shape[0], image_shape[1])
@@ -376,8 +384,7 @@ if __name__ == "__main__":
         lstm_h_state = None
         lstm_c_state = None
 
-    # Try not to modify
-    # Start game
+    # Start training
     global_step = 0
 
     # Track total time of training
@@ -408,15 +415,12 @@ if __name__ == "__main__":
         next_obs, _ = envs.reset(seed=args.seed)
 
         # Permutate the observations to be (batch_size=4 (envs), channels=3, height, width)
-        # Also, normalize the image to help the CNN layers
-        # next_obs['image'] = (torch.tensor(next_obs['image'], dtype=torch.float32, device=device).permute(0, 3, 1, 2) / 255.0)
         next_obs['image'] = torch.tensor(np.array(next_obs['image']), dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         next_done = torch.zeros(args.num_envs).to(device)
 
         env_step_count = 0
         for iteration in range(1, args.num_iterations + 1):
-            # 'Anneal' the learning rate if enabled
-            # Adjust the learning rate as the model trains
+            # Anneal the learning rate if enabled
             # Will be reset at the start of every environment
             if args.anneal_lr:
                 frac = 1.0 - (iteration - 1.0) / args.num_iterations
@@ -455,7 +459,7 @@ if __name__ == "__main__":
                 # Convert to proper tuple format before forward passing
                 lstm_states = (t_lstm_h_state, t_lstm_c_state)
                 
-                # Algorithm logic: action logic
+                # Algorithm action logic:
                 # During the collection of data, we pass the state to the model
                 # and sample a stochastic action and store it. Data collection is stochastic
                 # Learning occurs after data is collected and epochs are run
@@ -468,12 +472,10 @@ if __name__ == "__main__":
                         new_cfc_state = new_cfc_state * (1.0 - next_done.unsqueeze(1))
                         cfc_state = new_cfc_state
 
-                    # Same logic for LSTM
+                    # Same logic for LSTM, altered to incorporate the 'layer' dimension needed is LSTMs
                     if not new_lstm_states == (None, None):
                         new_h_state, new_c_state = new_lstm_states
                         
-                        # If LSTM states have layer dimension (1, batch, hidden_dim):
-                        # next_done is (batch,) -> need (1, batch, 1) for proper broadcasting
                         done_mask = (1.0 - next_done).unsqueeze(0).unsqueeze(2)  # (1, batch, 1)
                         
                         new_h_state = new_h_state * done_mask
@@ -666,6 +668,7 @@ if __name__ == "__main__":
                         # If still on the first task, don't compute EWC loss
                         if indx > 0:
                             # Apply Elastic Weight Consolidation
+                            print(f'Total loss: {loss}')
                             loss += ewc.compute_ewc_loss() # Is 0.0 on first run, but updates over time
 
                     # Apply learning to agent
@@ -758,8 +761,9 @@ if __name__ == "__main__":
     evaluation.plot_reward(path=model_path, sequence=sequence_keys, save_path=f'{model_path}/reward.svg')
     evaluation.plot_loss_curve(path=model_path, sequence=sequence_keys, save_path=f'{model_path}/loss.svg')
 
-    # Save the performance matrix as a NumPy array
+    # Save the performance matrices as a NumPy array
     np.save(f'{model_path}/performance_matrix.npy', perf_matrix)
+    np.save(f'{model_path}/performance_std_matrix.npy', perf_std_matrix)
 
     print(f'Final training time: {datetime.timedelta(seconds=time.time() - master_start_time)}')
     

@@ -18,20 +18,21 @@ print(f'Using {device}')
 
 # EXPERIMENT MODELS
 # LNN
-# model_path = f'{os.path.dirname(__file__)}/experiments/ex-1755188370.6804433/models/a=True_c=True_1755189418'
-model_path = f'{os.path.dirname(__file__)}/experiments/continual/models/a=True_c=True_1755281745'
+model_path = f'{os.path.dirname(__file__)}/experiments/phase_one/models/CfC_Critic_1755589055'
+# model_path = f'{os.path.dirname(__file__)}/experiments/continual/models/a=True_c=True_1755281745'
 # LSTM
 # model_path = f'{os.path.dirname(__file__)}/experiments/ex-1754861588.2359602/models/a=False_c=False_1754864793'
 # model_path = f'{os.path.dirname(__file__)}/experiments/continual/models/a=True_c=True_1754943727'
 
 # HPO MODELS
 # model_path = f'{os.path.dirname(__file__)}/HPO/mlp_hpo/models/hpo_trial_0'
+# model_path = f'{os.path.dirname(__file__)}/HPO/shared_cfc_hpo_4/models/hpo_trial_18'
 
-# env_id = ['MiniGrid-Empty-5x5-v0']
+env_id = ['MiniGrid-Empty-5x5-v0']
 # env_id = ['MiniGrid-DoorKey-5x5-v0']
 # env_id = ['MiniGrid-DoorKey-6x6-v0']
 # env_id = ['MiniGrid-Unlock-v0']
-env_id = ['MiniGrid-LavaGapS5-v0']
+# env_id = ['MiniGrid-LavaGapS5-v0']
 env = gym.make(env_id[0], render_mode='human')
 
 n_actions = env.action_space.n
@@ -43,7 +44,7 @@ with open(f'{model_path}/config.json', 'rb') as f:
 
 agent = models.Agent(config['model_config'])
 # Set Strict to False, as we EWC buffers will cause error, but we don't need them
-agent.load_state_dict(torch.load(f'{model_path}/final_model.pt', weights_only=True), strict=False)
+agent.load_state_dict(torch.load(f'{model_path}/MiniGrid-Unlock-v0.pt', weights_only=True), strict=False)
 # agent.load_state_dict(torch.load(f'{model_path}/MiniGrid-DoorKey-5x5-v0.pt', weights_only=True), strict=False)
 agent.to(device)
 

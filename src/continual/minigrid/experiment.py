@@ -42,10 +42,9 @@ def run_experiment(directory, file_name, name, args, conda_env='lnn_env'):
 
 # Build an experiment based on the given arguments
 # Experiment name is the batch experiment name, and will be shared among all experiments, whereas name alone is the name of the current executed experiment
-def make_experiment(experiment_name, args):
+def make_trial(experiment_name, args):
     base_args = [
         '--exp-name', str(experiment_name),
-        # '--exp-def', str(experiment_definition),
         '--num-envs', '4',
         '--learning-rate', str(args['lr']),
         '--ent-coef', str(args['ent']),
@@ -71,211 +70,105 @@ def make_experiment(experiment_name, args):
         'args': base_args
     }
 
+# Iterate over every model in the argument list and create a copy with a new seed for repeatability
+def make_experiment(experiment_name, arg_list):
+    # Unique seeds
+    seeds = [111, 222, 333, 444, 555]
+
+    # Iterate over every model in the args_list adding a seed, and creating a trial
+    experiments = []
+    for model in arg_list:
+        for seed in seeds:
+            trial_model = model.copy()
+            trial_model.update({'seed': seed})
+            
+            trial = make_trial(experiment_name, trial_model)
+            experiments.append(trial)
+
+    return experiments
+    
 def main():
-
-    # k_repeats = 3
-    k_repeats = 1
-
     directory = r"C:\Users\Logan\Documents\School\Wales\MSc\continual-rl-lnn\src\continual\minigrid"
     file_name = r"\continual.py"
 
-    experiment_name = f'ex-{time.time()}'
-    experiment_definition = \
-    """
-    Testing 3 versions of the same model. Models with the same args seem to learn quite differently, want to see why. EarlyStopping has been disabled for this run to see if this is the cause. 
-    """
+    # experiment_name = f'ex-{time.time()}'
+    experiment_name = f'phase_one'
     
     arg_list = [
-        # actor & critic LNN, no EWC or CLEAR
-        # {
-        #     'name': 'Actor & Critic LNN',
-        #     'lr': 1e-4,
-        #     'ent': 0.03,
-        #     'ewc': False,
-        #     'clear': False,
-        #     'cfc-actor': True,
-        #     'cfc-critic': True,
-        #     'use-lstm': False
-        # },
-        # {
-        #     'name': 'Actor & Critic LNN - EWC',
-        #     'lr': 1e-4,
-        #     'ent': 0.03,
-        #     'ewc': True,
-        #     'clear': False,
-        #     'cfc-actor': True,
-        #     'cfc-critic': True,
-        #     'use-lstm': False
-        # },
-        # {
-        #     'name': 'LSTM',
-        #     'hidden-dim': 64,
-        #     'hidden-state-dim': 128,
-        #     'lr': 1e-4,
-        #     'ent': 0.03,
-        #     'ewc': False,
-        #     'clear': False,
-        #     'cfc-actor': False,
-        #     'cfc-critic': False,
-        #     'use-lstm': True
-        # },
-        # {
-        #     'name': 'LNN',
-        #     'hidden-dim': 64,
-        #     'hidden-state-dim': 128,
-        #     'lr': 1e-4,
-        #     'ent': 0.03,
-        #     'ewc': False,
-        #     'clear': False,
-        #     'cfc-actor': True,
-        #     'cfc-critic': True,
-        #     'use-lstm': False
-        # },
-        # {
-        #     'name': 'LSTM',
-        #     'hidden-dim': 128,
-        #     'hidden-state-dim': 128,
-        #     'lr': 1e-4,
-        #     'ent': 0.03,
-        #     'ewc': False,
-        #     'clear': False,
-        #     'cfc-actor': False,
-        #     'cfc-critic': False,
-        #     'use-lstm': True
-        # },
-        # {
-        #     'name': 'LNN',
-        #     'hidden-dim': 128,
-        #     'hidden-state-dim': 128,
-        #     'lr': 1e-4,
-        #     'ent': 0.03,
-        #     'ewc': False,
-        #     'clear': False,
-        #     'cfc-actor': True,
-        #     'cfc-critic': True,
-        #     'use-lstm': False
-        # },
-        # {
-        #     'name': 'LSTM',
-        #     'hidden-dim': 256,
-        #     'hidden-state-dim': 128,
-        #     'lr': 1e-4,
-        #     'ent': 0.03,
-        #     'ewc': False,
-        #     'clear': False,
-        #     'cfc-actor': False,
-        #     'cfc-critic': False,
-        #     'use-lstm': True
-        # },
-        # {
-        #     'name': 'LNN',
-        #     'hidden-dim': 256,
-        #     'hidden-state-dim': 128,
-        #     'lr': 1e-4,
-        #     'ent': 0.03,
-        #     'ewc': False,
-        #     'clear': False,
-        #     'cfc-actor': True,
-        #     'cfc-critic': True,
-        #     'use-lstm': False
-        # },
-        # {
-        #     'name': 'LNN',
-        #     'hidden-dim': 128,
-        #     'hidden-state-dim': 128,
-        #     'lr': 0.000163612117862951,
-        #     'ent': 0.01770551230843089,
-        #     'ewc': False,
-        #     'clear': False,
-        #     'cfc-actor': True,
-        #     'cfc-critic': True,
-        #     'use-lstm': False,
-        #     'seed': 5
-        # },
-        # {
-        #     'name': 'LNN',
-        #     'hidden-dim': 128,
-        #     'hidden-state-dim': 128,
-        #     'lr': 0.000163612117862951,
-        #     'ent': 0.01770551230843089,
-        #     'ewc': False,
-        #     'clear': False,
-        #     'cfc-actor': True,
-        #     'cfc-critic': True,
-        #     'use-lstm': False,
-        #     'seed': 6
-        # },
         {
-            'name': 'LNN',
+            'name': 'LSTM',
             'hidden-dim': 128,
-            'hidden-state-dim': 128,
-            'lr': 0.000163612117862951,
-            'ent': 0.01770551230843089,
+            'hidden-state-dim': 256,
+            'lr': 0.001686566615826345,
+            'ent': 0.02707879112681343,
+            'ewc': False,
+            'clear': False,
+            'cfc-actor': False,
+            'cfc-critic': False,
+            'use-lstm': True,
+        },
+        {
+            'name': 'CfC A&C',
+            'hidden-dim': 128,
+            'hidden-state-dim': 256,
+            'lr': 0.00029897916838103204,
+            'ent': 0.02472512725852833,
             'ewc': False,
             'clear': False,
             'cfc-actor': True,
             'cfc-critic': True,
             'use-lstm': False,
-            'seed': 7
         },
-        # {
-        #     'name': 'LSTM - EWC',
-        #     'lr': 1e-4,
-        #     'ent': 0.03,
-        #     'ewc': True,
-        #     'clear': False,
-        #     'cfc-actor': False,
-        #     'cfc-critic': False,
-        #     'use-lstm': True
-        # },
-        # {
-        #     'name': 'MLP',
-        #     'hidden-state-dim': None,
-        #     'lr': 1e-4,
-        #     'ent': 0.03,
-        #     'ewc': False,
-        #     'clear': False,
-        #     'cfc-actor': False,
-        #     'cfc-critic': False,
-        #     'use-lstm': False
-        # },
-        # {
-        #     'name': 'MLP - EWC',
-        #     'lr': 1e-4,
-        #     'ent': 0.03,
-        #     'ewc': True,
-        #     'clear': False,
-        #     'cfc-actor': False,
-        #     'cfc-critic': False,
-        #     'use-lstm': False
-        # }
+        {
+            'name': 'CfC Actor',
+            'hidden-dim': 128,
+            'hidden-state-dim': 256,
+            'lr': 0.00029897916838103204,
+            'ent': 0.02472512725852833,
+            'ewc': False,
+            'clear': False,
+            'cfc-actor': True,
+            'cfc-critic': False,
+            'use-lstm': False,
+        },
+        {
+            'name': 'CfC Critic',
+            'hidden-dim': 128,
+            'hidden-state-dim': 256,
+            'lr': 0.00029897916838103204,
+            'ent': 0.02472512725852833,
+            'ewc': False,
+            'clear': False,
+            'cfc-actor': False,
+            'cfc-critic': True,
+            'use-lstm': False,
+        },
+        {
+            'name': 'MLP',
+            'hidden-dim': 128,
+            'hidden-state-dim': None,
+            'lr': 0.0012466997728671529,
+            'ent': 0.02676345769317956,
+            'ewc': False,
+            'clear': False,
+            'cfc-actor': False,
+            'cfc-critic': False,
+            'use-lstm': False,
+        }
     ]
 
-    # {
-    #     'name': 'Baseline',
-    #     'lr': 2.5e-4,
-    #     'ent': 0.01,
-    #     'ewc': False,
-    #     'clear': False,
-    #     'cfc-actor': False,
-    #     'cfc-critic': False,
-    #     'use-lstm': True
-    # }
-
-    # Multiply the list of arguments by k for validation
-    arg_list *= k_repeats
-
     # Iterate and make an experiment from each list of arguments in the arg_list
-    experiments = [make_experiment(experiment_name, args) for args in arg_list]
+    experiments = make_experiment(experiment_name, arg_list)
 
     total_runtime_start = time.time()
     # Iterate and run through each experiment defined above
-    # Can iterate k (probably 3) number of times for reptetion of results
     for e in experiments:
+        print(f'Running Experiment: {e["name"]}')
+        print(f'Experiment args: {e["args"]}')
         run_experiment(directory, file_name, e['name'], e['args'])
 
     print(f'Total runtime: {datetime.timedelta(seconds=time.time() - total_runtime_start)}')
-    # Alert the end
+    # Alert at the end
     print('\a')
 
 if __name__ == '__main__':

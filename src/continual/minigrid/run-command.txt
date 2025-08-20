@@ -13,22 +13,21 @@ LNN Actor & Critic:
 
 conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
-python ./src/continual/minigrid/continual.py --num-envs 4 --hidden-dim 128 --hidden-state-dim 96 --cfc-actor --cfc-critic --learning-rate 0.0011416503524392856 --ent-coef 0.020126507648761567
+python ./src/continual/minigrid/continual.py --num-envs 4 --hidden-dim 128 --hidden-state-dim 256 --cfc-actor --cfc-critic --learning-rate 0.00029897916838103204 --ent-coef 0.02472512725852833 --ewc --ewc-weight 2_000
 
 
 Baseline LSTM:
 
 conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
-python ./src/continual/minigrid/continual.py --num-envs 4 --hidden-state-dim 128 --hidden-dim 128 --use-lstm --learning-rate 1e-4 --ent-coef 0.03
+python ./src/continual/minigrid/continual.py --num-envs 4 --hidden-state-dim 128 --hidden-dim 256 --use-lstm --learning-rate 0.001686566615826345 --ent-coef 0.02707879112681343
 
 
 Baseline:
 
 conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
-python ./src/continual/minigrid/continual.py --num-envs 4 --learning-rate 1e-4 --ent-coef 0.03
-
+python ./src/continual/minigrid/continual.py --num-envs 4 --learning-rate 0.0012466997728671529 --ent-coef 0.02676345769317956 --hidden-dim 128 --ewc --ewc-weight 800
 
 
 Experiment with these later

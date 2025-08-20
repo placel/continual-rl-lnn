@@ -46,7 +46,7 @@ class Args:
 # Launch the continual.py script and train a model 
 # on a sequence of tasks with the given arguments
 def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef, 
-                hidden_dim, hidden_state_dim, seed, timeout_sec, trial_number, trial, seed_indx):
+                hidden_dim, hidden_state_dim, ewc_weight, seed, timeout_sec, trial_number, trial, seed_indx):
     
     use_lstm = (model_type == 'lstm')
     cfc_actor = (model_type == 'cfc_actor' or model_type == 'shared_cfc')
@@ -60,7 +60,9 @@ def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef,
         '--learning-rate', str(lr),
         '--ent-coef', str(ent_coef),
         '--hidden-dim', str(hidden_dim),
-        '--trial-id', str(trial_number)
+        '--trial-id', str(trial_number),
+        '--ewc',
+        '--ewc-weight', str(ewc_weight)
     ]
 
     # Not always used. Only add if needed
@@ -101,38 +103,39 @@ def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef,
         recent_returns = deque(maxlen= max(10, 2))  # keep it tiny; trainer logs often
         start_time = time.time()
 
-        # The proc must be read, otherwise the buffer will reach a maximum length and freeze the terminal and training
-        for line in iter(proc.stdout.readline, ''):
-            if not line:
-                break
-            file.write(line)
+        # In-depth pruning logic below. 
+        # Only check for pruning on seed 1 to rule out bad starts. Keep other seeds for verification. Much simpler than cross-seed pruning
+        if seed_indx == 0:
+            for line in iter(proc.stdout.readline, ''):
+                if not line:
+                    break
+                file.write(line)
 
-            m = METRIC_RE.search(line)  # matches global_step=..., episodic_return=...
-            # Only check for pruning on seed 1 to rule out bad starts. Keep other seeds for verification. Much simpler than cross-seed pruning
-            if m and seed_indx == 0:
-                step = int(m.group(1))               # global_step 
-                ep_ret = float(m.group(2))           # episodic_return in 0-1 for MiniGrid
-                recent_returns.append(ep_ret)
+                m = METRIC_RE.search(line)  # matches global_step=..., episodic_return=...
+                if m:
+                    step = int(m.group(1))               # global_step 
+                    ep_ret = float(m.group(2))           # episodic_return in 0-1 for MiniGrid
+                    recent_returns.append(ep_ret)
 
-                # Hit rungs at 25/50/75% of T (per task)
-                if next_cp_idx < len(checkpoints) and step >= checkpoints[next_cp_idx]:
-                    # smooth a bit, then make it monotone with best-so-far
-                    smoothed = sum(recent_returns)/len(recent_returns)
-                    best = max(best, smoothed)
-                    trial.report(best, step=step)
-                    if trial.should_prune():
-                        proc.terminate()
-                        try: proc.wait(timeout=5)
-                        except: proc.kill()
-                        raise optuna.TrialPruned(f"Pruned at ~{checkpoints[next_cp_idx]} steps (best={best:.3f})")
-                    next_cp_idx += 1
+                    # Hit rungs at 25/50/75% of T (per task)
+                    if next_cp_idx < len(checkpoints) and step >= checkpoints[next_cp_idx]:
+                        # smooth a bit, then make it monotone with best-so-far
+                        smoothed = sum(recent_returns)/len(recent_returns)
+                        best = max(best, smoothed)
+                        trial.report(best, step=step)
+                        if trial.should_prune():
+                            proc.terminate()
+                            try: proc.wait(timeout=5)
+                            except: proc.kill()
+                            raise optuna.TrialPruned(f"Pruned at ~{checkpoints[next_cp_idx]} steps (best={best:.3f})")
+                        next_cp_idx += 1
 
-        # Prune the trial if the subprocess takes too long
-        if timeout_sec and (time.time() - start_time) > timeout_sec:
-            proc.terminate()
-            try: proc.wait(timeout=5)
-            except: proc.kill()
-            raise optuna.TrialPruned(f"Trial timed out after {timeout_sec}s")
+            # Prune the trial if the subprocess takes too long
+            if timeout_sec and (time.time() - start_time) > timeout_sec:
+                proc.terminate()
+                try: proc.wait(timeout=5)
+                except: proc.kill()
+                raise optuna.TrialPruned(f"Trial timed out after {timeout_sec}s")
 
         proc.wait()
         if proc.returncode != 0:
@@ -147,6 +150,9 @@ def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef,
         raise optuna.TrialPruned(f'No model subdirs under {base_dir} (see {log_path})')
     return run_dirs[-1] # Return the newest subdirectory containing the model
 
+# This works for EWC as Optuna will still prioritize learning the task (too stong EWC regularization would prevent that)
+# and also rewards retention (too little EWC regularization wouldn't be rewarded)
+# Ultimately, the best EWC weight should be selected to prioritize task retention, and current task learning
 def eval_sequence(model_dir):
     config = json.loads((model_dir / 'config.json').read_text())
     sequence = list(config['sequence'].keys())
@@ -179,21 +185,26 @@ def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
 
     def objective(trial: optuna.Trial):
 
-        # Select a set of hyperparameters for this trial
-        # CfC models typically require higher ranges 
+        # Hyperparameters for each model type after HPO
         if 'cfc' in model_type:
-            lr = trial.suggest_float("learning_rate", 5e-5, 3e-4, log=True)
-            ent_coef = trial.suggest_float("ent_coef", 0.015, 0.04, log=True)
-        else:
-            lr = trial.suggest_float("learning_rate", 5e-5, 2.5e-3, log=True)
-            ent_coef = trial.suggest_float("ent_coef", 0.01, 0.03, log=True)
-
-        hidden_dim = trial.suggest_categorical('hidden_dim', [128, 192, 256])
-        hidden_state_dim = trial.suggest_categorical('hidden_state_dim', [96, 128, 192, 256])
-        
-        # MLP doesn't utilize a hidden_state_dimension
+            lr = 0.00029897916838103204
+            ent_coef = 0.02472512725852833
+            hidden_dim = 128
+            hidden_state_dim = 256
+        # CHANGE THE BELOW ONCE HPO FINISHES
+        elif 'lstm' in model_type:
+            lr = 0.00029897916838103204
+            ent_coef = 0.02472512725852833
+            hidden_dim = 128
+            hidden_state_dim = 256
         if model_type == 'mlp':
+            lr = 0.0012466997728671529
+            ent_coef = 0.02676345769317956
+            hidden_dim = 128
             hidden_state_dim = None
+
+        # Range from 20 (small) to original paper size 400 (large, meant for Atari)
+        ewc_weight = trial.suggest_float("ewc_weight", 20, 400, log=True)
 
         seeds = [1001, 2002, 3003] # Unique HPO seeds
         seed_dirs = {}
@@ -213,6 +224,7 @@ def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
                 ent_coef=ent_coef,
                 hidden_dim=hidden_dim,
                 hidden_state_dim=hidden_state_dim,
+                ewc_weight=ewc_weight,
                 seed=s, # Only changing the seed for len(seeds) times
                 timeout_sec=timeout_per_trial,
                 trial_number=trial.number,
