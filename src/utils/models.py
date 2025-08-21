@@ -84,8 +84,6 @@ class SharedNetwork(nn.Module):
             # Features is all feature maps sequentially combined  
             x = x.unsqueeze(1)
 
-            # print('STATES')
-            # print(lstm_states)
             # Process through CfC layer, extracting model states
             x, lstm_states = self.lstm1(x, lstm_states)
             # Remove extra time dimension

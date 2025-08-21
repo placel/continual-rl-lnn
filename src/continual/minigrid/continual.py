@@ -69,8 +69,10 @@ class Args:
     ewc: bool = False
     # EWC Weight (hyperparameter)
     ewc_weight: float = 0.0
-    # Load pretrained model
-    pretrained_model: str = None
+    # Toggle CLEAR stabilization technique
+    clear: bool = False
+    # Size of the replay buffer of CLEAR
+    clear_capacity: int = 0
 
     # ALGORITHM ARGS
     # Name of the environment
@@ -143,8 +145,8 @@ def end_environment(cur_task_indx, es_triggered=False):
     # Calculate average reward per environment
     # If args.trial_id is not None, HPO is running, and an average across 3 different seed should be used
     if args.trial_id is not None:
-        seeds = [92, 73, 11] # HPO Seeds
-        # seeds = [22, 33, 44, 55, 66] # Experiment Seeds
+        # seeds = [92, 73, 11] # HPO Seeds
+        seeds = [22, 33, 44, 55, 66] # Experiment Seeds
         means, stds = [], []
         for s in seeds:
             mean, std, _ = evaluation.mean_reward(agent, sequence_keys, seed=s)
@@ -178,8 +180,19 @@ def end_environment(cur_task_indx, es_triggered=False):
     # If EWC is enabled, compute it's loss
     if args.ewc:
         print('Registering Buffers')
-        # Update EWC Loss
-        ewc.register_buffers(b_obs, b_actions.long(), b_cfc_h_states, num_steps=args.num_steps, num_envs=args.num_envs)
+        # Update EWC buffers 
+        if args.cfc_actor or args.cfc_critic:
+            ewc.register_buffers(b_obs, b_actions.long(), b_states=b_cfc_h_states, num_steps=args.num_steps, num_envs=args.num_envs, model_type='cfc')
+        elif args.use_lstm:
+            # Transpose the rollout to put lstm layers first
+            ewc_lstm_states = (
+                        b_lstm_h_states.transpose(0, 1).clone(),  # (mb, 1, hidden) -> (1, mb, hidden)
+                        b_lstm_c_states.transpose(0, 1).clone()
+                    )
+            ewc.register_buffers(b_obs, b_actions.long(), b_states=ewc_lstm_states, num_steps=args.num_steps, num_envs=args.num_envs, model_type='lstm')
+        else:
+            ewc.register_buffers(b_obs, b_actions.long(), b_states=None, num_steps=args.num_steps, num_envs=args.num_envs, model_type='mlp')
+
 
     # Save this version of the model (in case of crashes later on)
     torch.save(agent.state_dict(), f'{model_path}/{sequence_keys[cur_task_indx]}.pt')
@@ -228,15 +241,6 @@ if __name__ == "__main__":
         # 'MiniGrid-KeyCorridorS3R1-v0': 12,
         # 'MiniGrid-LavaGapS5-v0': 15
     }   
-
-    pretrain_sequence = {
-        'MiniGrid-KeyCorridor-v0': 12,
-        'MiniGrid-LavaGapS5-v0': 12
-    }  
-
-    # sequence = {
-    #     args.env_id: 0
-    # }
 
     # Create a list of environment keys. Prevents the need for manually managing two env_id and patience lists
     sequence_keys = list(sequence.keys())
@@ -330,6 +334,7 @@ if __name__ == "__main__":
             w.writerow(header)
         return f, w
 
+     # Initialize the CSV files with proper headers
     episode_f, episode_w = make_writer(f'{model_path}/episodes.csv',
         ["trial_id","task_index","global_step","task_step","env_id","seed","episodic_return","episodic_length","wall_time"])
 
@@ -341,18 +346,22 @@ if __name__ == "__main__":
         ["trial_id","task_index","eval_task","mean_return","n_episodes","seed","wall_time"])
 
     # Collect baseline model performance (performance with no training)
-    # This is needed to compute Forward Transfer
-    # Returns mean reward for each task
+    # This is needed to compute Forward Transfer. Returns mean reward for each task
     baselines = []
     print('Collecting random baselines...')
     baselines = evaluation.mean_reward(agent, sequence_keys, return_all=False)
 
     # EWC Initialization
     if args.ewc:
-        from utils.stabilization import ElasticWeightConsolidation
-        ewc_strength = args.ewc_weight # The original EWC Paper uses 400 inside of the Atari Suite with DQN for reference, That's probably too much
-        ewc = ElasticWeightConsolidation(agent, ewc_strength)
+        from utils.stabilization import EWC
+        ewc_strength = args.ewc_weight # The original EWC Paper uses 400 inside of the Atari Suite with DQN for reference
+        ewc = EWC(agent, ewc_strength)
         print(f'EWC Initialized with strength {ewc_strength}...')
+
+    if args.clear:
+        from utils.stabilization import CLEAR
+        clear = CLEAR(args.clear_capacity)
+        print(f'CLEAR initialized...')
 
     # Alogirthm Logic
     # Storage
@@ -521,6 +530,10 @@ if __name__ == "__main__":
                             writer.add_scalar("charts/episodic_return", infos['episode']['r'][i], global_step)
                             writer.add_scalar("charts/episodic_length", infos['episode']['l'][i], global_step)
 
+            # # CLEAR Logic
+            # if args.clear:
+
+
             # Calculate advantages for future usage in algorithm 
             with torch.no_grad():
                 lstm_states = (t_lstm_h_state, t_lstm_c_state)
@@ -564,6 +577,8 @@ if __name__ == "__main__":
                     advantages[t] = last_gae_lam = delta + args.gamma * args.gae_lambda * next_non_terminal * last_gae_lam
                 
                 returns = advantages + values
+
+            # REPLACE A RANDOM SELECTION OF 25% WITH OLD REPLAY EXPERIENCE, THEN JUST TRAIN LIKE NORMAL, APPLYING CLEAR LOSS IF CLEAR IS USED
 
             # Flatten batch
             b_obs = obs.reshape((-1,) + permuted_image)
@@ -656,7 +671,6 @@ if __name__ == "__main__":
                         v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
                         v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
                         v_loss = 0.5 * v_loss_max.mean()
-
                     else:
                         v_loss = 0.5 * ((new_value - b_returns[mb_inds]) ** 2).mean()
 
@@ -669,8 +683,6 @@ if __name__ == "__main__":
                             ewc_loss = ewc.compute_ewc_loss() # Is 0.0 on first run, but updates over time
                             # Since EWC strength is so large, scale it as a ration, but don't let it beat PPO loss
                             scale = min(1.0, (loss.detach().abs() / (ewc_loss.detach() + 1e-8)).item())
-                            R_abs = (ewc_loss.detach() / (loss.detach().abs() + 1e-8)).item()
-                            print(f"R_abs: {R_abs:.3f}")
                             loss = loss + (scale * ewc_loss)
 
                     # Apply learning to agent
@@ -685,9 +697,7 @@ if __name__ == "__main__":
             y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
             var_y = np.var(y_true)
 
-            # Also, what is this; find out
             explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-
             current_sps = int(global_step / (time.time() - master_start_time))
 
             update_w.writerow([
@@ -705,7 +715,7 @@ if __name__ == "__main__":
                 time.time() - master_start_time 
             ])
             if indx % 64 == 0: update_f.flush()
-
+            
             # Copied for logging
             # TRY NOT TO MODIFY: record rewards for plotting purposes
             writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
@@ -718,7 +728,7 @@ if __name__ == "__main__":
             writer.add_scalar("losses/explained_variance", explained_var, global_step)
             print("SPS:", current_sps)
             writer.add_scalar("charts/SPS", current_sps, global_step)
-            
+
             # EARLY STOPPING
             # If early stopping is enabled, check if model training on current task should end
             # Ensure the model trains for at least k iterations before checking if early stopping should trigger
@@ -743,11 +753,7 @@ if __name__ == "__main__":
         es_triggered = False
     
     # Close open files
-    envs.close()
-    writer.close()
-    episode_f.close()
-    update_f.close()
-    eval_f.close()
+    envs.close(); writer.close(), episode_f.close(); update_f.close(); eval_f.close()
     
     print('Computing Metrics...')
     fwt = evaluation.compute_fwt(perf_matrix, baselines)
@@ -768,7 +774,6 @@ if __name__ == "__main__":
     np.save(f'{model_path}/performance_std_matrix.npy', perf_std_matrix)
 
     print(f'Final training time: {datetime.timedelta(seconds=time.time() - master_start_time)}')
-    
 
     torch.save(agent.state_dict(), f'{model_path}/final_model.pt')
     # Print a BEL character to screen. Will play an audible sound in terminal indicating it's done
