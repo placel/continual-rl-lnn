@@ -100,7 +100,7 @@ def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef,
 
         best = float('-inf')
         # small smoothing buffer across recent episodes (any env)
-        recent_returns = deque(maxlen= max(10, 2))  # keep it tiny; trainer logs often
+        recent_returns = deque(maxlen= max(10, 2))
         start_time = time.time()
 
         # The proc must be read, otherwise the buffer will reach a maximum length and freeze the terminal and training
@@ -117,7 +117,7 @@ def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef,
                 ep_ret = float(m.group(2))           # episodic_return in 0-1 for MiniGrid
                 recent_returns.append(ep_ret)
 
-                # Hit rungs at 25/50/75% of T (per task)
+                # Hit rungs at 25/50/75% of timesteps (per task)
                 if next_cp_idx < len(checkpoints) and step >= checkpoints[next_cp_idx]:
                     # smooth a bit, then make it monotone with best-so-far
                     smoothed = sum(recent_returns)/len(recent_returns)

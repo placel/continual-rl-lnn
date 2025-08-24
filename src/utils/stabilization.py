@@ -83,7 +83,7 @@ class EWC:
 class ResevoirSampler:
     def __init__(self, max_size):
         self.max_size = max_size
-        self.buffer = [] # Stores a list of batched experiences (128 states each)
+        self.buffer = [] # Stores a list of experiences (128 states each)
         self.n = 0
 
     def add(self, batch):
@@ -101,8 +101,8 @@ class ResevoirSampler:
     def add_batched_chunks(self, batches):
         for b in batches: self.add(b)
 
-    def sample(self, batch_size):
-        return np.random.sample(self.buffer, batch_size)
+    def sample(self, samples):
+        return np.random.choice(self.buffer, samples)
 
 class CLEAR:
     def __init__(self, buffer_size):
@@ -110,9 +110,19 @@ class CLEAR:
     
     # Used externally only on the first task for collection
     def update_buffer(self, rollout):
-        
-        self.replay_buffer.add_batched_chunks(rollout)
+        # Extract values (obs, action, logits, etc.) from each env and append to buffer 
+        envs = torch.unbind(rollout, dim=2) # Unbind extracts each env column (dim 2) into it's own tensor
+        self.replay_buffer.add_batched_chunks(envs)
 
-    # Returns a new rollout mixed with 25% old replay experiences
-    def sample_replay(self, rollout):
-        pass
+    # Returns a new rollout mixed with x old replay experiences (usually 1)
+    def blend_rollout(self, rollout, samples):
+        # Select old experiences from the buffer
+        old_exps = self.replay_buffer.sample(samples)
+
+        is_old = torch.zeros(rollout.shape[1], rollout.shape[2])
+        is_old[:, -samples] = 1.0
+        
+        # Replace the last x number of envs with old information
+        rollout[:, :, -samples] = old_exps[:, :]
+
+        return torch.unbind(rollout, dim=0), is_old

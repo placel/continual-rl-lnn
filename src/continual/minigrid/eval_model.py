@@ -28,10 +28,10 @@ model_path = f'{os.path.dirname(__file__)}/experiments/phase_one/models/CfC_Crit
 # model_path = f'{os.path.dirname(__file__)}/HPO/mlp_hpo/models/hpo_trial_0'
 # model_path = f'{os.path.dirname(__file__)}/HPO/shared_cfc_hpo_4/models/hpo_trial_18'
 
-env_id = ['MiniGrid-Empty-5x5-v0']
+# env_id = ['MiniGrid-Empty-5x5-v0']
 # env_id = ['MiniGrid-DoorKey-5x5-v0']
 # env_id = ['MiniGrid-DoorKey-6x6-v0']
-# env_id = ['MiniGrid-Unlock-v0']
+env_id = ['MiniGrid-Unlock-v0']
 # env_id = ['MiniGrid-LavaGapS5-v0']
 env = gym.make(env_id[0], render_mode='human')
 

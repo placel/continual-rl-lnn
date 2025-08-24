@@ -16,11 +16,16 @@ cd Documents/School/Wales/MSc/continual-rl-lnn
 python ./src/continual/minigrid/continual.py --num-envs 4 --hidden-dim 128 --hidden-state-dim 256 --cfc-actor --cfc-critic --learning-rate 0.00029897916838103204 --ent-coef 0.02472512725852833 --ewc --ewc-weight 2_000
 
 
-Baseline LSTM:
+HPO LSTM:
 
 conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
 python ./src/continual/minigrid/continual.py --num-envs 4 --hidden-state-dim 128 --hidden-dim 128 --use-lstm --learning-rate 0.0011001437866728792 --ent-coef 0.029626504303054173
+Baseline LSTM:
+
+conda activate lnn_env
+cd Documents/School/Wales/MSc/continual-rl-lnn
+python ./src/continual/minigrid/continual.py --num-envs 4 --hidden-state-dim 128 --hidden-dim 128 --use-lstm --learning-rate 2.5e-4 --ent-coef 0.01
 
 
 Baseline:

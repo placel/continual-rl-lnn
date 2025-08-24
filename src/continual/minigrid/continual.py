@@ -73,16 +73,18 @@ class Args:
     clear: bool = False
     # Size of the replay buffer of CLEAR
     clear_capacity: int = 0
+    # Ratio of old to new experiences for CLEAR replay
+    clear_ratio: float = 0.25 # Between 0.0 and 1.0
 
     # ALGORITHM ARGS
     # Name of the environment
     env_id: str = 'MiniGrid-Empty-5x5-v0'
     # Total timesteps allowed in the whole experiment
-    total_timesteps: int = 250_000
+    total_timesteps: int = 200_000
     # Learning rate for the optimizer
     learning_rate: float = 1.5e-4 # Better for CfC models
     # Number of environments for parallel game processing
-    num_envs: int = 4
+    num_envs: int = 8
     # Total number of steps to run in each environment per policy rollout
     num_steps: int = 128
     # num_steps: int = 256
@@ -95,11 +97,10 @@ class Args:
     # Number of mini-batches
     num_minibatches: int = 4
     # Epochs to update the policy at a time (generally 4 in a row)
-    update_epochs: int = 4
+    update_epochs: int = 3 # 3 instead of 4 to balance out the increase to 8 envs (instead of 4)
     # Toggle advantages normalization
     norm_adv: bool = True
     # Clip epsilon
-    # clip_coef: float = 0.2
     clip_coef: float = 0.2
     # Toggles usage of clipped loss for the value function
     clip_vloss: bool = True
@@ -117,7 +118,6 @@ class Args:
     minibatch_size: int = 0
     num_iterations: int = 0
 
-# Make the environment
 def make_env(env_id, idx, capture_video, run_name):
     def thunk():
         if capture_video and idx == 0:
@@ -130,11 +130,18 @@ def make_env(env_id, idx, capture_video, run_name):
     
     return thunk
 
-# Create the environments for parallelization
-# passing in the env_name allows us to repeat this for each environment within the sequence 
-def create_sync_envs(env_name):
-    return gym.vector.SyncVectorEnv(
-        [make_env(env_name, i, args.capture_video, run_name) for i in range(args.num_envs)]
+# def create_sync_envs(env_name):
+#     return gym.vector.SyncVectorEnv(
+#         [make_env(env_name, i, args.capture_video, run_name) for i in range(args.num_envs)]
+#     )
+
+# AsyncVectorEnv is significantly faster than SyncVectorEnv (true parallelization)
+from gymnasium.vector import AsyncVectorEnv
+def create_envs(env_name):
+    return AsyncVectorEnv(
+        [make_env(env_name, i, args.capture_video, run_name) for i in range(args.num_envs)],
+        shared_memory=False,  # True doesn't work in MiniGrid
+        context='spawn',     # safer on Windows/Mac too
     )
 
 # This is called at the end of an environment, whether triggered by early stopping or naturally
@@ -182,14 +189,14 @@ def end_environment(cur_task_indx, es_triggered=False):
         print('Registering Buffers')
         # Update EWC buffers 
         if args.cfc_actor or args.cfc_critic:
-            ewc.register_buffers(b_obs, b_actions.long(), b_states=b_cfc_h_states, num_steps=args.num_steps, num_envs=args.num_envs, model_type='cfc')
+            ewc.register_buffers(b_obs, b_actions.long(), b_states=next_cfc_state, num_steps=args.num_steps, num_envs=args.num_envs, model_type='cfc')
         elif args.use_lstm:
             # Transpose the rollout to put lstm layers first
-            ewc_lstm_states = (
-                        b_lstm_h_states.transpose(0, 1).clone(),  # (mb, 1, hidden) -> (1, mb, hidden)
-                        b_lstm_c_states.transpose(0, 1).clone()
-                    )
-            ewc.register_buffers(b_obs, b_actions.long(), b_states=ewc_lstm_states, num_steps=args.num_steps, num_envs=args.num_envs, model_type='lstm')
+            # ewc_lstm_states = (
+            #             b_lstm_h_states.transpose(0, 1).clone(),  # (mb, 1, hidden) -> (1, mb, hidden)
+            #             b_lstm_c_states.transpose(0, 1).clone()
+            #         )
+            ewc.register_buffers(b_obs, b_actions.long(), b_states=next_lstm_state, num_steps=args.num_steps, num_envs=args.num_envs, model_type='lstm')
         else:
             ewc.register_buffers(b_obs, b_actions.long(), b_states=None, num_steps=args.num_steps, num_envs=args.num_envs, model_type='mlp')
 
@@ -264,7 +271,8 @@ if __name__ == "__main__":
     # so this running this on-demand doesn't cause any shape issues. Environments with larger image inputs can be 
     # shrunk to fit the standard, or vice versa
     # ** 
-    envs = create_sync_envs(sequence_keys[0])
+    # envs = create_sync_envs(sequence_keys[0])
+    envs = create_envs(sequence_keys[0])
 
     # Confirm the action space is Discrete (left, right, etc.), no Continuous 
     assert isinstance(envs.single_action_space, gym.spaces.Discrete) # Only disscrete action space is supported here
@@ -296,20 +304,31 @@ if __name__ == "__main__":
 
     # Create the agent
     lstm_layers = 1 # Keep as one, maybe toy with it later
+    action_space = envs.single_action_space.n
     model_config = {
-        'action_space': int(envs.single_action_space.n),
-        'hidden_dim': int(args.hidden_dim),
+        'action_space':     int(action_space),
+        'hidden_dim':       int(args.hidden_dim),
         'hidden_state_dim': int(args.hidden_state_dim),
-        'actor_cfc': bool(args.cfc_actor),
-        'critic_cfc': bool(args.cfc_critic),
-        'use_lstm': bool(args.use_lstm),
-        'ewc': bool(args.ewc),
-        'ewc_weight': float(args.ewc_weight),
-        'seed': int(args.seed)
+        'actor_cfc':        bool(args.cfc_actor),
+        'critic_cfc':       bool(args.cfc_critic),
+        'use_lstm':         bool(args.use_lstm),
+        'ewc':              bool(args.ewc),
+        'ewc_weight':       float(args.ewc_weight),
+        'seed':             int(args.seed)
     }
 
     agent = models.Agent(model_config).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+
+    # Experimental SPS Speedups
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+    if not args.torch_deterministic:
+        torch.backends.cudnn.benchmark = True
+    try:
+        torch.set_float32_matmul_precision("high")
+    except Exception:
+        pass
 
     # Update model_config with sequence and patience, and store as json in each model folder 
     # model_config.update(sequence)
@@ -378,20 +397,22 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    logits = torch.zeros((args.num_steps, args.num_envs, action_space)).to(device) 
 
     # Initialize the states depending on if CfC is used for either Actor or Critic
     if args.cfc_actor or args.cfc_critic:
-        cfc_h_state = torch.zeros((args.num_steps, args.num_envs, args.hidden_state_dim)).to(device)
+        next_cfc_state = torch.zeros((args.num_envs, args.hidden_state_dim)).to(device)
     else: 
-        cfc_h_state = None
+        next_cfc_state = None
 
     # Create tensors for LSTM states. LSTM states are expected to be tuples, however, tuples are immutable, so values must first be created as tensors
     if args.use_lstm:
-        lstm_h_state = torch.zeros((args.num_steps, lstm_layers, args.num_envs, args.hidden_state_dim)).to(device)
-        lstm_c_state = torch.zeros((args.num_steps, lstm_layers, args.num_envs, args.hidden_state_dim)).to(device)
-    else: 
-        lstm_h_state = None
-        lstm_c_state = None
+        next_lstm_state = (
+            torch.zeros((lstm_layers, args.num_envs, args.hidden_state_dim)).to(device),
+            torch.zeros((lstm_layers, args.num_envs, args.hidden_state_dim)).to(device)
+        )
+    else:
+        next_lstm_state = (None, None)
 
     # Start training
     global_step = 0
@@ -418,7 +439,7 @@ if __name__ == "__main__":
         # create the next batch of environments associated with the current curriculum environment
         if indx > 0:
             # Call the function to make envs for new curriculum
-            envs = create_sync_envs(env_name=cur_env)
+            envs = create_envs(env_name=cur_env)
 
         # Reset the environment (initialize for new envs)
         next_obs, _ = envs.reset(seed=args.seed)
@@ -429,6 +450,10 @@ if __name__ == "__main__":
 
         env_step_count = 0
         for iteration in range(1, args.num_iterations + 1):
+            initial_cfc_state  = next_cfc_state.clone() if args.cfc_actor or args.cfc_critic else None
+            initial_lstm_state = (next_lstm_state[0].clone(), next_lstm_state[1].clone()) if args.use_lstm else (None, None)
+            # initial_lstm_state = (next_lstm_state[0].transpose(0, 1).clone(), next_lstm_state[1].transpose(0, 1).clone())
+
             # Anneal the learning rate if enabled
             # Will be reset at the start of every environment
             if args.anneal_lr:
@@ -436,66 +461,25 @@ if __name__ == "__main__":
                 lrnow = frac * args.learning_rate
                 optimizer.param_groups[0]['lr'] = lrnow
 
-            # Prepare CfC or LSTM states accordingly
-            if args.cfc_actor or args.cfc_critic:
-                cfc_state = torch.zeros((args.num_envs, args.hidden_state_dim)).to(device)
-            else:
-                cfc_state = None
-
-            if args.use_lstm:
-                t_lstm_h_state = torch.zeros((lstm_layers, args.num_envs, args.hidden_state_dim)).to(device)
-                t_lstm_c_state = torch.zeros((lstm_layers, args.num_envs, args.hidden_state_dim)).to(device)
-            else: 
-                t_lstm_h_state = None
-                t_lstm_c_state = None
-
             # Perform a collection of states in batches of usually 128
             for step in range(0, args.num_steps):
                 global_step += args.num_envs # account for each step in every env
                 env_step_count += args.num_envs
                 obs[step] = next_obs['image']
                 dones[step] = next_done
-
-                # Store the current steps states for later retrieval during update training
-                # Intialized to zero but update over time
-                if args.cfc_actor or args.cfc_critic:
-                    cfc_h_state[step] = cfc_state
-                
-                if args.use_lstm:
-                    lstm_h_state[step] = t_lstm_h_state
-                    lstm_c_state[step] = t_lstm_c_state
-                
-                # Convert to proper tuple format before forward passing
-                lstm_states = (t_lstm_h_state, t_lstm_c_state)
                 
                 # Algorithm action logic:
                 # During the collection of data, we pass the state to the model
                 # and sample a stochastic action and store it. Data collection is stochastic
                 # Learning occurs after data is collected and epochs are run
                 with torch.no_grad():
+                    # next_lstm_state = (next_lstm_state[0].transpose(0, 1).clone(), next_lstm_state[1].transpose(0, 1).clone())
                     # Get the action the actor takes. And get the value the critic assigns said action
-                    action, logprob, _, value, new_cfc_state, new_lstm_states, _ = agent.get_action_and_value(next_obs['image'], cfc_state, lstm_states)
-
-                    # If CfC is used, Update the states with new states, resetting hidden states where the next_state is terminal
-                    if not new_cfc_state is None:
-                        new_cfc_state = new_cfc_state * (1.0 - next_done.unsqueeze(1))
-                        cfc_state = new_cfc_state
-
-                    # Same logic for LSTM, altered to incorporate the 'layer' dimension needed is LSTMs
-                    if not new_lstm_states == (None, None):
-                        new_h_state, new_c_state = new_lstm_states
-                        
-                        done_mask = (1.0 - next_done).unsqueeze(0).unsqueeze(2)  # (1, batch, 1)
-                        
-                        new_h_state = new_h_state * done_mask
-                        new_c_state = new_c_state * done_mask
-                        
-                        t_lstm_h_state = new_h_state
-                        t_lstm_c_state = new_c_state
-
+                    action, logprob, _, value, next_cfc_state, next_lstm_state, new_logits = agent.get_action_and_value(next_obs['image'], next_cfc_state, next_lstm_state, dones=next_done)
                     values[step] = value.flatten()
                 actions[step] = action
                 logprobs[step] = logprob
+                logits[step] = new_logits
 
                 # Try note to modify: play the game and log 
                 next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
@@ -531,27 +515,27 @@ if __name__ == "__main__":
                             writer.add_scalar("charts/episodic_length", infos['episode']['l'][i], global_step)
 
             # # CLEAR Logic
+            # After the above, pass all 4 envs into the CLEAR buffer and merge 1 old env with the new
+            # extract the returned variables like values, dones... = clear.blend_envs(rollout)
+            # alter the advatange calculation based on whether or not the environment is old and CLEAR is active
             # if args.clear:
-
+            #     # Stack every tensor into a single for easier processing
+            #     rollout = torch.stack((obs, actions, logprobs, rewards, dones, values, logits, next_obs, next_done))
+            #     if indx == 0: # If on the first task, only update buffer, don't sample from it
+            #         clear.update_buffer(rollout)
+            #     else:
+            #         rollout, is_old = clear.blend_rollout(rollout, int(args.clear_ratio * args.num_envs))
+            #         obs, actions, logprobs, rewards, dones, values, logits, next_obs, next_done = rollout
 
             # Calculate advantages for future usage in algorithm 
             with torch.no_grad():
-                lstm_states = (t_lstm_h_state, t_lstm_c_state)
                 # Get the critics thoughts on the value of the next state (for all envs)
-                next_value = agent.get_value(next_obs['image'], cfc_states=cfc_state, lstm_states=lstm_states).reshape(1, -1)
+                next_value = agent.get_value(next_obs['image'], cfc_states=next_cfc_state, lstm_states=next_lstm_state, dones=next_done).reshape(1, -1)
 
-                # allocate space
                 advantages = torch.zeros_like(rewards).to(device)
-                
-                # Holds the running Generalized Advantage Estimation (GAE) lambda accumulation
                 last_gae_lam = 0
 
-                # Loop backwards through the entire rollout to calculate advantage for each state
                 for t in reversed(range(args.num_steps)):
-                    # Get the values of the next state. We actually have these values
-                    # and we go in reverse to grab the value of the next state 
-                    # (values are still generated by the critic though)
-                    # This just grabs the value of the next state depending on if it's terminal or not
                     if t == args.num_steps - 1:
                         next_non_terminal = 1.0 - next_done
                         next_values = next_value
@@ -559,21 +543,7 @@ if __name__ == "__main__":
                         next_non_terminal = 1.0 - dones[t + 1]
                         next_values = values[t + 1]
 
-                    # The core calculation behind GAE that gives us the advantage value
-                    # reward (reward from the state) + (discount * next_state_value (generated by critic)) - current_value (generated by critic)
-                    # This gives us delta, which is how different the resulting state is vs what we expected
                     delta = rewards[t] + args.gamma * next_values * next_non_terminal - values[t]
-
-                    # Recursively calculate advantage backwards through time
-                    # This gives us an increasing advantage as we move backwards, and a decreasing advantage as the model moves forward
-                    # Advantage ​= δt​ + (γλ)δt+1 ​+(γλ)2δt+2 ​+ (γλ)3δt+3 ​+ …
-                    # Gamma controls how much we care about the future (discount)
-                    # lambda controls how much we smooth by including multiple steps. The bigger lambda is, the more steps are included
-                    # The advantage will shrink from left to right as we care less and less about future rewards, but still want to consider them
-                    # this is done recursiveley though so it appears to grow
-                    # gamma * lambda will incorporate the decay needed
-                    # Bottom line: lambda is just a weight applied to each delta (difference in values) applied through time
-                    # the earlier time steps will be more impactful than later steps. Lambda is similar to Gamma in a way
                     advantages[t] = last_gae_lam = delta + args.gamma * args.gae_lambda * next_non_terminal * last_gae_lam
                 
                 returns = advantages + values
@@ -587,49 +557,36 @@ if __name__ == "__main__":
             b_advantages = advantages.reshape(-1)
             b_returns = returns.reshape(-1)
             b_values = values.reshape(-1)
-
-            if args.cfc_actor or args.cfc_critic:
-                b_cfc_h_states = cfc_h_state.reshape(-1, args.hidden_state_dim)
-            else:
-                b_cfc_h_states = None
-
-            if args.use_lstm:
-                b_lstm_h_states = lstm_h_state.reshape(-1, lstm_layers, args.hidden_state_dim)
-                b_lstm_c_states = lstm_c_state.reshape(-1, lstm_layers, args.hidden_state_dim)
-            else:
-                b_lstm_h_states = None
-                b_lstm_c_states = None
+            b_dones = dones.reshape(-1)
 
             # Optimize the policy (actor) and value (critic) networks
-            b_inds = np.arange(args.batch_size)
+            assert args.num_envs % args.num_minibatches == 0
+            envs_per_batch = args.num_envs // args.num_minibatches
+            env_inds = np.arange(args.num_envs)
+            flat_inds = np.arange(args.batch_size).reshape(args.num_steps, args.num_envs)
             clip_fracs = []
-
             # This is how many times we perfrom backprop on the model after batch collection (usually 4 times)
             for epoch in range(args.update_epochs):
                 # Shuffle the batch so it's not sequential
-                np.random.shuffle(b_inds)
+                np.random.shuffle(env_inds)
                 # Iterate over minibatches for incremental learning
-                for start in range(0, args.batch_size, args.minibatch_size):
-                    end = start + args.minibatch_size
-                    mb_inds = b_inds[start:end]
+                for start in range(0, args.num_envs, envs_per_batch):
+                    end = start + envs_per_batch
+                    mb_env_inds = env_inds[start:end]
+                    mb_inds = flat_inds[:, mb_env_inds].ravel()
 
-                    # Extract states for this mini-batch
-                    # and pass to model as one array
-                    if args.cfc_actor or args.cfc_critic:
-                        mb_cfc_states = b_cfc_h_states[mb_inds].clone()
-                    else:
-                        mb_cfc_states = None
-
-                    if args.use_lstm:
-                        mb_lstm_states = (
-                            b_lstm_h_states[mb_inds].transpose(0, 1).clone(),  # (mb, 1, hidden) -> (1, mb, hidden)
-                            b_lstm_c_states[mb_inds].transpose(0, 1).clone()
-                        )
-                    else:
-                        mb_lstm_states = None
+                    # Prepare hidden states
+                    cfc_pass = initial_cfc_state[mb_env_inds] if args.cfc_actor or args.cfc_critic else None
+                    lstm_pass = (initial_lstm_state[0][:, mb_env_inds], initial_lstm_state[1][:, mb_env_inds]) if args.use_lstm else (None, None)
 
                     # Forward pass (with grad) the minibatch through to the model to get values associated with the provided action
-                    _, new_log_prob, entropy, new_value, _, _, _ = agent.get_action_and_value(b_obs[mb_inds], cfc_states=mb_cfc_states, lstm_states=mb_lstm_states, action=b_actions.long()[mb_inds])
+                    _, new_log_prob, entropy, new_value, _, _, _ = agent.get_action_and_value(
+                        b_obs[mb_inds], 
+                        cfc_states=cfc_pass, 
+                        lstm_states=lstm_pass, 
+                        action=b_actions.long()[mb_inds],
+                        dones=b_dones[mb_inds]
+                    )
                     
                     # Ratio of the probablity of the new policy vs the old policy for taking provided action
                     # This is a key component in the PPO equation
@@ -637,7 +594,6 @@ if __name__ == "__main__":
                     ratio = log_ratio.exp()
 
                     with torch.no_grad():
-                        # Copied from cleanrl directly (I don't know what this is doing)
                         # calculate approx_kl http://joschu.net/blog/kl-approx.html
                         old_approx_kl = (-log_ratio).mean()
                         approx_kl = ((ratio - 1) - log_ratio).mean()
@@ -681,7 +637,7 @@ if __name__ == "__main__":
                         if indx > 0: # If still on the first task, don't compute EWC loss
                             # Apply Elastic Weight Consolidation
                             ewc_loss = ewc.compute_ewc_loss() # Is 0.0 on first run, but updates over time
-                            # Since EWC strength is so large, scale it as a ration, but don't let it beat PPO loss
+                            # Since EWC strength is so large, scale it as a ratio, but don't let it beat PPO loss
                             scale = min(1.0, (loss.detach().abs() / (ewc_loss.detach() + 1e-8)).item())
                             loss = loss + (scale * ewc_loss)
 

@@ -38,7 +38,7 @@ def mean_reward(agent, envs, seed=42, episodes=10, return_all=True, render_mode=
         total_reward = []
 
         state, _ = env.reset(seed=seed)
-
+        dones = torch.zeros(1).to(device)
         # Run each environment 10 times
         for i in range(episodes):
             if i > 0:
@@ -69,7 +69,7 @@ def mean_reward(agent, envs, seed=42, episodes=10, return_all=True, render_mode=
                 # Get the action to take
                 # No gradient as we don't want the model learning here
                 with torch.no_grad():
-                    action, _, _, _, cfc_states, lstm_states, _ = agent.get_action_and_value(img, cfc_states, lstm_states, deterministic=True) # Deterministic set True as we don't want stochasticity to influence the model during eval
+                    action, _, _, _, cfc_states, lstm_states, _ = agent.get_action_and_value(img, cfc_states, lstm_states, dones=dones, deterministic=True) # Deterministic set True as we don't want stochasticity to influence the model during eval
                 
                 action = action.item()
                 # action_buffer.append(action)
