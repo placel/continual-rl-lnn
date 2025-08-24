@@ -188,8 +188,8 @@ def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
             lr = trial.suggest_float("learning_rate", 5e-5, 2.5e-3, log=True)
             ent_coef = trial.suggest_float("ent_coef", 0.01, 0.03, log=True)
 
-        hidden_dim = trial.suggest_categorical('hidden_dim', [128, 192, 256])
-        hidden_state_dim = trial.suggest_categorical('hidden_state_dim', [96, 128, 192, 256])
+        hidden_dim = trial.suggest_categorical('hidden_dim', [96, 128, 192])
+        hidden_state_dim = trial.suggest_categorical('hidden_state_dim', [96, 128, 192])
         
         # MLP doesn't utilize a hidden_state_dimension
         if model_type == 'mlp':

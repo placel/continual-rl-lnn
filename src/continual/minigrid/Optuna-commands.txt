@@ -2,7 +2,7 @@ LSTM HPO RUN
 
 conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
-python ./src/continual/minigrid/optuna_hpo.py --trials 50 --total-timesteps 200_000 --model-type lstm --study-name lstm_hpo_2
+python ./src/continual/minigrid/optuna_hpo.py --trials 25 --total-timesteps 200_000 --model-type lstm --study-name lstm_hpo_3
 
 
 SHARED_CFC HPO RUN

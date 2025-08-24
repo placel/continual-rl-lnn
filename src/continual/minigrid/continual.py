@@ -152,8 +152,8 @@ def end_environment(cur_task_indx, es_triggered=False):
     # Calculate average reward per environment
     # If args.trial_id is not None, HPO is running, and an average across 3 different seed should be used
     if args.trial_id is not None:
-        # seeds = [92, 73, 11] # HPO Seeds
-        seeds = [22, 33, 44, 55, 66] # Experiment Seeds
+        seeds = [222, 333, 444] # HPO Seeds
+        # seeds = [22, 33, 44, 55, 66] # Experiment Seeds
         means, stds = [], []
         for s in seeds:
             mean, std, _ = evaluation.mean_reward(agent, sequence_keys, seed=s)
@@ -179,7 +179,7 @@ def end_environment(cur_task_indx, es_triggered=False):
             int(j),
             float(m), 
             int(10),                                                # Fixed episode count (see evaluation.py)
-            str(seeds) if args.trial_id is None else int(42),       # If an experiment or HPO trial was evaluated on a list of seeds, log that, otherwise use static 42 (evaluation.py)
+            str(seeds) if args.trial_id is not None else int(42),       # If an experiment or HPO trial was evaluated on a list of seeds, log that, otherwise use static 42 (evaluation.py)
             time.time() - master_start_time
         ])
         eval_f.flush() 
@@ -226,7 +226,13 @@ if __name__ == "__main__":
             monitor_gym=True,
             save_code=True,
         )
-    
+
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['OMP_NUM_THREADS'] = '1'
+    print(args.hidden_state_dim)
+    print(f'Envs: {args.num_envs}')
+    print(f'Update Epochs: {args.update_epochs}')
+
     # Setup logging 
     writer = SummaryWriter(f'{os.path.dirname(__file__)}/runs/{run_name}')
     writer.add_text(
