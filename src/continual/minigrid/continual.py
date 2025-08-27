@@ -153,6 +153,7 @@ def end_environment(cur_task_indx, es_triggered=False):
     # If args.trial_id is not None, HPO is running, and an average across 3 different seed should be used
     if args.trial_id is not None:
         seeds = [222, 333, 444] # HPO Seeds
+        # seeds = [1, 2, 3] # Experiment Seeds
         # seeds = [22, 33, 44, 55, 66] # Experiment Seeds
         means, stds = [], []
         for s in seeds:
@@ -405,21 +406,6 @@ if __name__ == "__main__":
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
     logits = torch.zeros((args.num_steps, args.num_envs, action_space)).to(device) 
 
-    # Initialize the states depending on if CfC is used for either Actor or Critic
-    if args.cfc_actor or args.cfc_critic:
-        next_cfc_state = torch.zeros((args.num_envs, args.hidden_state_dim)).to(device)
-    else: 
-        next_cfc_state = None
-
-    # Create tensors for LSTM states. LSTM states are expected to be tuples, however, tuples are immutable, so values must first be created as tensors
-    if args.use_lstm:
-        next_lstm_state = (
-            torch.zeros((lstm_layers, args.num_envs, args.hidden_state_dim)).to(device),
-            torch.zeros((lstm_layers, args.num_envs, args.hidden_state_dim)).to(device)
-        )
-    else:
-        next_lstm_state = (None, None)
-
     # Start training
     global_step = 0
 
@@ -433,19 +419,31 @@ if __name__ == "__main__":
     # Iterate over each environment within the curriculum and train the model
     for indx, cur_env in enumerate(sequence_keys):
         print(f'Current environment: {cur_env}')
-
-        # Keep track of how long each env lasts, it should get longer with each
         sequence_start_time = time.time()
+
+        # The first batch is created before this loop. If not the first batch, 
+        # create the next batch of environments associated with the current curriculum environment
+        if indx > 0: envs = create_envs(env_name=cur_env)
+
+        # Initialize the states depending on if CfC is used for either Actor or Critic. Reset on each task
+        if args.cfc_actor or args.cfc_critic:
+            next_cfc_state = torch.zeros((args.num_envs, args.hidden_state_dim)).to(device)
+        else: 
+            next_cfc_state = None
+
+        # Create tensors for LSTM states. LSTM states are expected to be tuples, however, tuples are immutable, so values must first be created as tensors
+        if args.use_lstm:
+            next_lstm_state = (
+                torch.zeros((lstm_layers, args.num_envs, args.hidden_state_dim)).to(device),
+                torch.zeros((lstm_layers, args.num_envs, args.hidden_state_dim)).to(device)
+            )
+        else:
+            next_lstm_state = (None, None)
+
         
         if args.es_flag:
             # initialize the EarlyStopping class at start of every episode to ensure no overlap between task performance
             es_monitor = EarlyStopping(patience=sequence[cur_env], min_delta=0.01, mode='max', verbose=True, restore_weights_flag=args.es_restore_weights) 
-
-        # The first batch is created before this loop. If not the first batch, 
-        # create the next batch of environments associated with the current curriculum environment
-        if indx > 0:
-            # Call the function to make envs for new curriculum
-            envs = create_envs(env_name=cur_env)
 
         # Reset the environment (initialize for new envs)
         next_obs, _ = envs.reset(seed=args.seed)
@@ -458,10 +456,8 @@ if __name__ == "__main__":
         for iteration in range(1, args.num_iterations + 1):
             initial_cfc_state  = next_cfc_state.clone() if args.cfc_actor or args.cfc_critic else None
             initial_lstm_state = (next_lstm_state[0].clone(), next_lstm_state[1].clone()) if args.use_lstm else (None, None)
-            # initial_lstm_state = (next_lstm_state[0].transpose(0, 1).clone(), next_lstm_state[1].transpose(0, 1).clone())
 
-            # Anneal the learning rate if enabled
-            # Will be reset at the start of every environment
+            # Anneal the learning rate if enabled. Will be reset at the start of every environment
             if args.anneal_lr:
                 frac = 1.0 - (iteration - 1.0) / args.num_iterations
                 lrnow = frac * args.learning_rate
@@ -475,11 +471,9 @@ if __name__ == "__main__":
                 dones[step] = next_done
                 
                 # Algorithm action logic:
-                # During the collection of data, we pass the state to the model
-                # and sample a stochastic action and store it. Data collection is stochastic
-                # Learning occurs after data is collected and epochs are run
+                # During the collection of data, we pass the state to the model and sample a stochastic action and store it. 
+                # Data collection is stochastic. Learning occurs after data is collected and epochs are run
                 with torch.no_grad():
-                    # next_lstm_state = (next_lstm_state[0].transpose(0, 1).clone(), next_lstm_state[1].transpose(0, 1).clone())
                     # Get the action the actor takes. And get the value the critic assigns said action
                     action, logprob, _, value, next_cfc_state, next_lstm_state, new_logits = agent.get_action_and_value(next_obs['image'], next_cfc_state, next_lstm_state, dones=next_done)
                     values[step] = value.flatten()
@@ -583,6 +577,7 @@ if __name__ == "__main__":
 
                     # Prepare hidden states
                     cfc_pass = initial_cfc_state[mb_env_inds] if args.cfc_actor or args.cfc_critic else None
+                    # We use [:, mb_env_inds] to take the initial state of each Layer in the LSTM. Although this is typically one 1. Also why we don't do it for CfC 
                     lstm_pass = (initial_lstm_state[0][:, mb_env_inds], initial_lstm_state[1][:, mb_env_inds]) if args.use_lstm else (None, None)
 
                     # Forward pass (with grad) the minibatch through to the model to get values associated with the provided action

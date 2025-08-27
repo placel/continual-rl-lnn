@@ -32,7 +32,11 @@ Baseline:
 
 conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
-python ./src/continual/minigrid/continual.py --num-envs 4 --learning-rate 0.0012466997728671529 --ent-coef 0.02676345769317956 --hidden-dim 128 --ewc --ewc-weight 20_000
+python ./src/continual/minigrid/continual.py --num-envs 8 --learning-rate 0.0012466997728671529 --ent-coef 0.02676345769317956 --hidden-dim 128 --ewc --ewc-weight 20_000
+
+conda activate lnn_env
+cd Documents/School/Wales/MSc/continual-rl-lnn
+python ./src/continual/minigrid/continual.py --num-envs 8 --learning-rate 0.0001 --ent-coef 0.03 --hidden-dim 128
 
 
 Experiment with these later

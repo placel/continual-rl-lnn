@@ -111,6 +111,7 @@ def compute_fwt(perf_matrix, b):
 
 def compute_bwt(perf_matrix):
     n_tasks = perf_matrix.shape[0]
+    # Final performance subtracted by performance after learning task initially. How much it forgot
     vals = [perf_matrix[-1][i] - perf_matrix[i][i] for i in range(n_tasks-1)]
 
     return np.mean(vals) if vals else 0.0

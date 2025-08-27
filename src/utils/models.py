@@ -24,7 +24,6 @@ class SharedEmbedding(nn.Module):
         # flattene image for prediction
         self.flatten = nn.Flatten()
         self.linear1 = nn.LazyLinear(hidden_dim)
-        self.linear2 = layer_init(nn.Linear(hidden_dim, hidden_dim))
     
     def forward(self, image):
         

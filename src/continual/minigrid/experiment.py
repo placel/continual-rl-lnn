@@ -45,7 +45,6 @@ def run_experiment(directory, file_name, name, args, conda_env='lnn_env'):
 def make_trial(experiment_name, args):
     base_args = [
         '--exp-name',           str(experiment_name),
-        '--num-envs', '4',
         '--learning-rate',      str(args['lr']),
         '--ent-coef',           str(args['ent']),
         '--hidden-dim',         str(args['hidden-dim']),
@@ -164,6 +163,7 @@ def main():
         #     'use-lstm': False,
         # }
     ]
+
 
     # Iterate and make an experiment from each list of arguments in the arg_list
     experiments = make_experiment(experiment_name, arg_list)

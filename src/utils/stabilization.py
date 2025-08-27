@@ -104,6 +104,7 @@ class ResevoirSampler:
     def sample(self, samples):
         return np.random.choice(self.buffer, samples)
 
+# https://github.com/AGI-Labs/continual_rl/blob/develop/continual_rl/policies/clear/clear_monobeast.py
 class CLEAR:
     def __init__(self, buffer_size):
         self.replay_buffer = ResevoirSampler(buffer_size)
