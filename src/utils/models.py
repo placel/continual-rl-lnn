@@ -256,15 +256,16 @@ class Agent(nn.Module):
         for h, d in zip(hidden, done):
             h, states = core(
                 h.unsqueeze(1),
-                ( 
-                    (1.0 - d).view(1, -1, 1) * states[0], 
-                    (1.0 - d).view(1, -1, 1) * states[1] 
-                ) 
+                (
+                    (1.0 - d).view(1, -1, 1) * states[0], # Reset hidden states to 0 if the environment is temrinated. Reseting ensures states don't cross into the next episode
+                    (1.0 - d).view(1, -1, 1) * states[1]
+                )
             )
             new_hidden += [h.squeeze(1)]
         new_hidden = torch.cat(new_hidden) 
         return new_hidden, states
 
+    # Derived from _lstm_roll found above
     def _cfc_roll(self, cell, hidden, state, done):
         batch_size = state.shape[0]
         hidden = hidden.reshape(-1, batch_size, cell.input_size)
@@ -272,7 +273,7 @@ class Agent(nn.Module):
         new_hidden = []
         for h, d in zip(hidden, done):
             mask = (1.0 - d).view(batch_size, 1) # Apply time dimension
-            h, state = cell(h.unsqueeze(1), state * mask)
+            h, state = cell(h.unsqueeze(1), state * mask) # Only one state dimension for CfC
             new_hidden += [h.squeeze(1)] # Remove time dimension
         new_hidden = torch.cat(new_hidden)
         return new_hidden, state

@@ -2,9 +2,9 @@ import datetime
 from pathlib import Path
 from dataclasses import dataclass
 from subprocess import Popen, PIPE, STDOUT, TimeoutExpired
+from collections import deque
 import re, math
 METRIC_RE = re.compile(r"global_step=(\d+).*episodic_return=([-+]?\d*\.?\d+)")
-
 
 import optuna
 import optuna.visualization as vis
@@ -88,11 +88,11 @@ def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef,
         #     print(line)
         #     if not line: break
         #     ...
-        
-        # GPT BELOW
-        from collections import deque
 
         # Checkpoints at 25/50/75% of the per-task budget T       
+        # Only matches on a global_step, not task_step. Pruning may only occur on the first task to rule out bad starts on Empty. 
+        # Later tasks are often more erratic in training (Not learning untill step 170,000), whereas Empty should be conistent (after max 50_000 it's usually learned).
+        # This prunes trials performing terribly right out of the gate 
         checkpoints = [int(0.25 * total_timesteps), int(0.50 * total_timesteps), int(0.75 * total_timesteps)]
         next_cp_idx = 0
 
@@ -258,12 +258,14 @@ def main():
         args.storage = f'sqlite:///{storage_path}'
         print(f'Using storage: {args.storage}')
 
+
     study = optuna.create_study(
         study_name=args.study_name,
         storage=args.storage,
         direction='maximize', # 'maximize' the objective. In this case, a combined mean reward on all tasks (Maximize model performance across all tasks)
         load_if_exists=True,
-        sampler=optuna.samplers.TPESampler(seed=8),
+        # sampler=optuna.samplers.TPESampler(seed=8), Initial Sampler to use to establish a baseline
+        sampler=optuna.samplers.TPESampler(seed=33, multivariate=True, group=True), # Further refine with this sampler config
         pruner=optuna.pruners.MedianPruner(n_startup_trials=8, n_warmup_steps=2, interval_steps=1)
     )
 

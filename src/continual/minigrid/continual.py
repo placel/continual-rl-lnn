@@ -152,7 +152,8 @@ def end_environment(cur_task_indx, es_triggered=False):
     # Calculate average reward per environment
     # If args.trial_id is not None, HPO is running, and an average across 3 different seed should be used
     if args.trial_id is not None:
-        seeds = [222, 333, 444] # HPO Seeds
+        # seeds = [222, 333, 444] # HPO Seeds
+        seeds = [2222, 3333, 4444] # EWC Optuna Seeds
         # seeds = [1, 2, 3] # Experiment Seeds
         # seeds = [22, 33, 44, 55, 66] # Experiment Seeds
         means, stds = [], []
@@ -185,22 +186,17 @@ def end_environment(cur_task_indx, es_triggered=False):
         ])
         eval_f.flush() 
 
-    # If EWC is enabled, compute it's loss
-    if args.ewc:
+    # If EWC is enabled, register buffers for loss computation on update
+    # Don't register buffers if the last task is finished, as buffers for this task are not needed; wasted compute
+    if args.ewc and not cur_task_indx == len(sequence) - 1: 
         print('Registering Buffers')
         # Update EWC buffers 
         if args.cfc_actor or args.cfc_critic:
-            ewc.register_buffers(b_obs, b_actions.long(), b_states=next_cfc_state, num_steps=args.num_steps, num_envs=args.num_envs, model_type='cfc')
+            ewc.register_buffers(b_obs, b_actions.long(), b_dones=b_dones, model_type='cfc', batch_size=args.minibatch_size, hidden_state_dim=args.hidden_state_dim)
         elif args.use_lstm:
-            # Transpose the rollout to put lstm layers first
-            # ewc_lstm_states = (
-            #             b_lstm_h_states.transpose(0, 1).clone(),  # (mb, 1, hidden) -> (1, mb, hidden)
-            #             b_lstm_c_states.transpose(0, 1).clone()
-            #         )
-            ewc.register_buffers(b_obs, b_actions.long(), b_states=next_lstm_state, num_steps=args.num_steps, num_envs=args.num_envs, model_type='lstm')
+            ewc.register_buffers(b_obs, b_actions.long(), b_dones=b_dones, model_type='lstm', batch_size=args.minibatch_size, hidden_state_dim=args.hidden_state_dim, lstm_layers=lstm_layers)
         else:
-            ewc.register_buffers(b_obs, b_actions.long(), b_states=None, num_steps=args.num_steps, num_envs=args.num_envs, model_type='mlp')
-
+            ewc.register_buffers(b_obs, b_actions.long(), b_dones=b_dones, model_type='mlp')
 
     # Save this version of the model (in case of crashes later on)
     torch.save(agent.state_dict(), f'{model_path}/{sequence_keys[cur_task_indx]}.pt')
@@ -639,7 +635,8 @@ if __name__ == "__main__":
                             # Apply Elastic Weight Consolidation
                             ewc_loss = ewc.compute_ewc_loss() # Is 0.0 on first run, but updates over time
                             # Since EWC strength is so large, scale it as a ratio, but don't let it beat PPO loss
-                            scale = min(1.0, (loss.detach().abs() / (ewc_loss.detach() + 1e-8)).item())
+                            # print(f'EWC Loss: {ewc_loss}')
+                            scale = min(1.0, (loss.detach().abs() / (ewc_loss + 1e-8)).item()) # + 1e-8 incase loss is 0.0 -> Divide by 0 error
                             loss = loss + (scale * ewc_loss)
 
                     # Apply learning to agent

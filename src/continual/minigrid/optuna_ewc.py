@@ -79,7 +79,6 @@ def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef,
     os.makedirs(PWD / 'HPO' / exp_name / 'logs', exist_ok=True)
     log_path = PWD / 'HPO' / exp_name / 'logs' / f't{trial_number}_logs.log'
 
-    # Run the HPO experiment. If it takes too long (timeout_sec), kill the proc
     # Log the final results in the above path
     with open(log_path, 'w', encoding='utf-8') as file:
         proc = Popen(cmd, stdout=PIPE, stderr=STDOUT, text=True)
@@ -90,52 +89,6 @@ def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef,
         #     print(line)
         #     if not line: break
         #     ...
-        
-        # GPT BELOW
-        from collections import deque
-
-        # Checkpoints at 25/50/75% of the per-task budget T       
-        checkpoints = [int(0.25 * total_timesteps), int(0.50 * total_timesteps), int(0.75 * total_timesteps)]
-        next_cp_idx = 0
-
-        best = float('-inf')
-        # small smoothing buffer across recent episodes (any env)
-        recent_returns = deque(maxlen= max(10, 2))
-        start_time = time.time()
-
-        # The proc must be read, otherwise the buffer will reach a maximum length and freeze the terminal and training
-        for line in iter(proc.stdout.readline, ''):
-            if not line:
-                break
-            file.write(line)
-
-            # Trial Pruning Logic
-            m = METRIC_RE.search(line)  # matches global_step=..., episodic_return=...
-            # Only check for pruning on seed 1 to rule out bad starts. Keep other seeds for verification. Much simpler than cross-seed pruning
-            if m and seed_indx == 0:
-                step = int(m.group(1))               # global_step 
-                ep_ret = float(m.group(2))           # episodic_return in 0-1 for MiniGrid
-                recent_returns.append(ep_ret)
-
-                # Hit rungs at 25/50/75% of timesteps (per task)
-                if next_cp_idx < len(checkpoints) and step >= checkpoints[next_cp_idx]:
-                    # smooth a bit, then make it monotone with best-so-far
-                    smoothed = sum(recent_returns)/len(recent_returns)
-                    best = max(best, smoothed)
-                    trial.report(best, step=step)
-                    if trial.should_prune():
-                        proc.terminate()
-                        try: proc.wait(timeout=5)
-                        except: proc.kill()
-                        raise optuna.TrialPruned(f"Pruned at ~{checkpoints[next_cp_idx]} steps (best={best:.3f})")
-                    next_cp_idx += 1
-
-        # Prune the trial if the subprocess takes too long
-        if timeout_sec and (time.time() - start_time) > timeout_sec:
-            proc.terminate()
-            try: proc.wait(timeout=5)
-            except: proc.kill()
-            raise optuna.TrialPruned(f"Trial timed out after {timeout_sec}s")
 
         proc.wait()
         if proc.returncode != 0:
@@ -187,25 +140,25 @@ def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
 
         # Hyperparameters for each model type after HPO. EWC Weight range matching for CfC and LSTM as they exhibit similar limits under testing
         if 'cfc' in model_type:
-            lr = 0.00029897916838103204
-            ent_coef = 0.02472512725852833
-            hidden_dim = 128
+            lr = 0.0002967453235099826
+            ent_coef = 0.032278201588886286
+            hidden_dim = 256
             hidden_state_dim = 256
             ewc_weight = trial.suggest_float("ewc_weight", 1e4, 5e5, log=True)
         elif 'lstm' in model_type:
-            lr = 0.0011001437866728792
-            ent_coef = 0.029626504303054173
+            lr = 0.0008183828832312314
+            ent_coef = 0.024115085083935874
             hidden_dim = 128
             hidden_state_dim = 128
             ewc_weight = trial.suggest_float("ewc_weight", 1e4, 5e5, log=True)
         if model_type == 'mlp':
-            lr = 0.0012466997728671529
-            ent_coef = 0.02676345769317956
-            hidden_dim = 128
+            lr = 0.0005378582501432388
+            ent_coef = 0.01691417789055679
+            hidden_dim = 256
             hidden_state_dim = None
             ewc_weight = trial.suggest_float("ewc_weight", 1e6, 2e8, log=True)
 
-        seeds = [1001, 2002, 3003] # Unique HPO seeds
+        seeds = [10001, 20002, 30003] # Unique HPO seeds
         seed_dirs = {}
         seed_scores = {}
 
@@ -269,13 +222,13 @@ def main():
         args.storage = f'sqlite:///{storage_path}'
         print(f'Using storage: {args.storage}')
 
+    # No pruning needed on 'Empty'
     study = optuna.create_study(
         study_name=args.study_name,
         storage=args.storage,
         direction='maximize', # 'maximize' the objective. In this case, a combined mean reward on all tasks (Maximize model performance across all tasks)
         load_if_exists=True,
-        sampler=optuna.samplers.TPESampler(seed=8),
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=8, n_warmup_steps=2, interval_steps=1)
+        sampler=optuna.samplers.TPESampler(seed=8)
     )
 
     # If a previous study was found and unfinished, progress will be displayed
