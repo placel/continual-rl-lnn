@@ -1,8 +1,3 @@
-"""
-Run a batch of experiments sequentially.
-This removes the need to manually manage multiple experiments at a time in parallel (which is much slower)
-making more efficient use of the GPU, and freeing up management time
-"""
 import subprocess
 import os
 import sys
@@ -75,7 +70,7 @@ def make_trial(experiment_name, args):
 # Iterate over every model in the argument list and create a copy with a new seed for repeatability
 def make_experiment(experiment_name, arg_list):
     # Unique seeds
-    seeds = [111, 222, 333, 444, 555]
+    seeds = [1111, 2222, 3333, 4444, 5555]
 
     # Iterate over every model in the args_list adding a seed, and creating a trial
     experiments = []
@@ -91,77 +86,78 @@ def make_experiment(experiment_name, arg_list):
     
 def main():
     directory = r"C:\Users\Logan\Documents\School\Wales\MSc\continual-rl-lnn\src\continual\minigrid"
-    file_name = r"\continual.py"
+    # file_name = r"\continual.py"
+    file_name = r"\continual_before_full_clear.py"
 
     # experiment_name = f'ex-{time.time()}'
-    experiment_name = f'phase_two'
+    experiment_name = f'phase_one_final'
     
     arg_list = [
         {
             'name': 'LSTM',
             'hidden-dim': 128,
             'hidden-state-dim': 128,
-            'lr': 0.0011001437866728792,
-            'ent': 0.029626504303054173,
-            'ewc': True,
-            'ewc_weight': 105924.69998147941,
+            'lr': 0.0008183828832312314,
+            'ent': 0.024115085083935874,
+            'ewc': False,
+            'ewc_weight': 0.0,
             'clear': False,
             'cfc-actor': False,
             'cfc-critic': False,
             'use-lstm': True,
+        },
+        {
+            'name': 'CfC A&C',
+            'hidden-dim': 256,
+            'hidden-state-dim': 256,
+            'lr': 0.0002967453235099826,
+            'ent': 0.032278201588886286,
+            'ewc': False,
+            'ewc_weight': 0.0,
+            'clear': False,
+            'cfc-actor': True,
+            'cfc-critic': True,
+            'use-lstm': False,
+        },
+        {
+            'name': 'CfC Actor',
+            'hidden-dim': 256,
+            'hidden-state-dim': 256,
+            'lr': 0.0002967453235099826,
+            'ent': 0.032278201588886286,
+            'ewc': False,
+            'ewc_weight': 0.0,
+            'clear': False,
+            'cfc-actor': True,
+            'cfc-critic': False,
+            'use-lstm': False,
+        },
+        {
+            'name': 'CfC Critic',
+            'hidden-dim': 256,
+            'hidden-state-dim': 256,
+            'lr': 0.0002967453235099826,
+            'ent': 0.032278201588886286,
+            'ewc': False,
+            'ewc_weight': 0.0,
+            'clear': False,
+            'cfc-actor': False,
+            'cfc-critic': True,
+            'use-lstm': False,
+        },
+        {
+            'name': 'MLP',
+            'hidden-dim': 256,
+            'hidden-state-dim': 0, # 0 instead of None, as None throws an error (quick fix)
+            'lr': 0.0005378582501432388,
+            'ent': 0.01691417789055679,
+            'ewc': False,
+            'ewc_weight': 0.0,
+            'clear': False,
+            'cfc-actor': False,
+            'cfc-critic': False,
+            'use-lstm': False,
         }
-        # {
-        #     'name': 'CfC A&C',
-        #     'hidden-dim': 128,
-        #     'hidden-state-dim': 256,
-        #     'lr': 0.00029897916838103204,
-        #     'ent': 0.02472512725852833,
-        #     'ewc': True,
-        #     'ewc_weight': 180977.92883292574,
-        #     'clear': False,
-        #     'cfc-actor': True,
-        #     'cfc-critic': True,
-        #     'use-lstm': False,
-        # },
-        # {
-        #     'name': 'CfC Actor',
-        #     'hidden-dim': 128,
-        #     'hidden-state-dim': 256,
-        #     'lr': 0.00029897916838103204,
-        #     'ent': 0.02472512725852833,
-        #     'ewc': True,
-        #     'ewc_weight': 180977.92883292574,
-        #     'clear': False,
-        #     'cfc-actor': True,
-        #     'cfc-critic': False,
-        #     'use-lstm': False,
-        # },
-        # {
-        #     'name': 'CfC Critic',
-        #     'hidden-dim': 128,
-        #     'hidden-state-dim': 256,
-        #     'lr': 0.00029897916838103204,
-        #     'ent': 0.02472512725852833,
-        #     'ewc': True,
-        #     'ewc_weight': 180977.92883292574,
-        #     'clear': False,
-        #     'cfc-actor': False,
-        #     'cfc-critic': True,
-        #     'use-lstm': False,
-        # },
-        # {
-        #     'name': 'MLP',
-        #     'hidden-dim': 128,
-        #     'hidden-state-dim': None,
-        #     'lr': 0.0012466997728671529,
-        #     'ent': 0.02676345769317956,
-        #     'ewc': True,
-        #     'ewc_weight': 4993725.528460518,
-        #     'clear': False,
-        #     'cfc-actor': False,
-        #     'cfc-critic': False,
-        #     'use-lstm': False,
-        # }
     ]
 
 

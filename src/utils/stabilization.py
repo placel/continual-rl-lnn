@@ -3,6 +3,7 @@ import torch
 import numpy as np
 from torch import autograd
 import torch.nn.functional as F
+from dataclasses import dataclass
 
 # Adpated for PPO by https://github.com/shivamsaboo17/Overcoming-Catastrophic-forgetting-in-Neural-Networks/blob/master/elastic_weight_consolidation.py
 # class EWC:
@@ -201,51 +202,96 @@ class EWC:
         return self.ewc_loss
 
 # Based on: https://en.wikipedia.org/wiki/Reservoir_sampling. Adapted for PPO rollout chunking
-class ResevoirSampler:
-    def __init__(self, max_size):
-        self.max_size = max_size
-        self.buffer = [] # Stores a list of experiences (128 states each)
-        self.n = 0
+class ReservoirSampler:
+    def __init__(self, capacity: int):
+        self.capacity = int(capacity)
+        self.buffer = []
+        self.seen = 0
 
-    def add(self, batch):
-        self.n += 1
-
-        # If there's room in the buffer, add
-        if len(self.buffer) < self.max_size:
-            self.buffer.append(batch)
-        # Otherwise, randomly replace an existing batch with the new 
+    def add(self, item):
+        self.seen += 1
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(item)
         else:
-            j = np.random.randint(self.n)
-            if j <=self.max_size:
-                self.buffer[j] = batch
+            j = np.random.randint(0, self.seen)
+            if j < self.capacity:
+                self.buffer[j] = item
 
-    def add_batched_chunks(self, batches):
-        for b in batches: self.add(b)
+    def sample(self, count: int):
+        count = min(count, len(self.buffer))
+        idx = np.random.choice(len(self.buffer), size=count, replace=False)
+        return [self.buffer[i] for i in idx]
 
-    def sample(self, samples):
-        return np.random.choice(self.buffer, samples)
-
-# https://github.com/AGI-Labs/continual_rl/blob/develop/continual_rl/policies/clear/clear_monobeast.py
+# Implemented based on the paper: https://arxiv.org/abs/1811.11682
 class CLEAR:
     def __init__(self, buffer_size):
-        self.replay_buffer = ResevoirSampler(buffer_size)
+        self.replay = ReservoirSampler(buffer_size)
         # Set values needed here so I can be like clear.ratio and shit
-    
+
     # Used externally only on the first task for collection
     def update_buffer(self, rollout):
-        # Extract values (obs, action, logits, etc.) from each env and append to buffer 
-        envs = torch.unbind(rollout, dim=2) # Unbind extracts each env column (dim 2) into it's own tensor
-        self.replay_buffer.add_batched_chunks(envs)
+        num_envs = rollout['actions'].shape[1]
+        for e in range(num_envs):
+            item = {
+                "obs":             rollout["obs"][:, e].contiguous(),        
+                "actions":         rollout["actions"][:, e].contiguous(),     
+                "behav_logp":      rollout["behav_logp"][:, e].contiguous(),
+                "rewards":         rollout["rewards"][:, e].contiguous(),
+                "dones":           rollout["dones"][:, e].contiguous(),   
+                "values_behav":    rollout["values_behav"][:, e].contiguous(),
+                "behav_logits":    rollout["behav_logits"][:, e].contiguous(),
+                "bootstrap_values": rollout["bootstrap_values"][e].unsqueeze(0)
+            }
+            self.replay.add(item)
 
-    # Returns a new rollout mixed with x old replay experiences (usually 1)
-    def blend_rollout(self, rollout, samples):
-        # Select old experiences from the buffer
-        old_exps = self.replay_buffer.sample(samples)
+    # Returns a new rollout mixed with x old replay experiences envs (usually 1)
+    def blend_rollout(self, rollout, k_replay):
+        timesteps, num_envs = rollout["actions"].shape
+        k = min(k_replay, len(self.replay.buffer), num_envs)
+        replay_items = self.replay.sample(k)
 
-        is_old = torch.zeros(rollout.shape[1], rollout.shape[2])
-        is_old[:, -samples] = 1.0
+        # mask: 0 = on-policy, 1 = replay
+        is_replay = torch.zeros((timesteps, num_envs), device=rollout["actions"].device)
+        if k == 0: return rollout, is_replay
+
+        # Apply mask to old experiences
+        start = num_envs - k
+        is_replay[:, start:] = 1.0
+
+        # Iterate and overwrite last envs in the rollout with old experiences. 
+        for i, item in enumerate(replay_items):
+            e = start + i
+            rollout["obs"][:, e]          = item["obs"]
+            rollout["actions"][:, e]      = item["actions"]
+            rollout["behav_logp"][:, e]   = item["behav_logp"]
+            rollout["rewards"][:, e]      = item["rewards"]
+            rollout["dones"][:, e]        = item["dones"]
+            rollout["values_behav"][:, e] = item["values_behav"]
+            rollout["behav_logits"][:, e] = item["behav_logits"]
+            rollout["bootstrap_values"][e] = item["bootstrap_values"].squeeze(0)
+
+        return rollout, is_replay
+
+# class CLEAR:
+#     def __init__(self, buffer_size):
+#         self.replay_buffer = ResevoirSampler(buffer_size)
+#         # Set values needed here so I can be like clear.ratio and shit
+    
+#     # Used externally only on the first task for collection
+#     def update_buffer(self, rollout):
+#         # Extract values (obs, action, logits, etc.) from each env and append to buffer 
+#         envs = torch.unbind(rollout, dim=2) # Unbind extracts each env column (dim 2) into it's own tensor
+#         self.replay_buffer.add_batched_chunks(envs)
+
+#     # Returns a new rollout mixed with x old replay experiences (usually 1)
+#     def blend_rollout(self, rollout, samples):
+#         # Select old experiences from the buffer
+#         old_exps = self.replay_buffer.sample(samples)
+
+#         is_old = torch.zeros(rollout.shape[1], rollout.shape[2])
+#         is_old[:, -samples] = 1.0
         
-        # Replace the last x number of envs with old information
-        rollout[:, :, -samples] = old_exps[:, :]
+#         # Replace the last x number of envs with old information
+#         rollout[:, :, -samples] = old_exps[:, :]
 
-        return torch.unbind(rollout, dim=0), is_old
+#         return torch.unbind(rollout, dim=0), is_old

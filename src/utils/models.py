@@ -211,12 +211,12 @@ class Agent(nn.Module):
             )
 
             # Create the actor model. Pass in the envs which will adapt depending on the tasks at hand
-            self.actor_core = ActorHead(embedding_dim, self.action_space, self.hidden_dim, self.hidden_state_dim, self.actor_cfc)
+            self.actor_core = ActorHead(embedding_dim, self.hidden_dim, self.hidden_state_dim, use_cfc=True)
             self.actor_head = layer_init(nn.Linear(self.hidden_state_dim, self.action_space), std=1.0)
         
         elif self.critic_cfc and not self.actor_cfc:
             print('CfC Critic Head')
-            self.critic_core = CriticHead(embedding_dim, self.hidden_dim, self.hidden_state_dim, self.actor_cfc)
+            self.critic_core = CriticHead(embedding_dim, self.hidden_dim, self.hidden_state_dim, use_cfc=True)
             self.critic_head = layer_init(nn.Linear(self.hidden_state_dim, 1), std=1.0)
 
             # Create the actor model. Pass in the envs which will adapt depending on the tasks at hand
@@ -338,3 +338,9 @@ class Agent(nn.Module):
             action = probs.sample()
 
         return action, probs.log_prob(action), probs.entropy(), value, cfc_states, lstm_states, logits
+    
+    # Needed for CLEAR to get the on-policy values for v-trace calculation
+    def evaluate_actions(self, image, actions, cfc_states=None, lstm_states=(None, None), dones=None):
+        _, logp, ent, value, cfc_states, lstm_states, logits = self.get_action_and_value(image, cfc_states=cfc_states, lstm_states=lstm_states, action=actions, dones=dones)
+
+        return logp, value, cfc_states, lstm_states
