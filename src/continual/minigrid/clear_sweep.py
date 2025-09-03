@@ -20,18 +20,19 @@ def run_experiment(directory, file_name, name, args, conda_env='lnn_env'):
     return_code = 1
     try:
         command = [conda_exe, "run", "-n", conda_env, "python", directory + file_name] + args
-        output = Popen(command, stdout=PIPE, stderr=STDOUT)
+        output = Popen(command)
 
         # Stream stdout lines
-        while True:
-            line = output.stdout.readline()
-            line = str(line).replace("\\r\\n'", '').replace("b'", '')
-            print(line)
-            if not line:
-                break
-            ...
+        # while True:
+        #     line = output.stdout.readline()
+        #     line = str(line).replace("\\r\\n'", '').replace("b'", '')
+        #     print(line)
+        #     if not line:
+        #         break
+        #     ...
 
         return_code = output.returncode
+        output.wait()
     except Exception as e:
         print(f"Error occured on experiment {name}: {e}")
         return_code = 1
@@ -151,8 +152,8 @@ def main():
     ]
 
     # Keep seeds minimal for insurance only.
-    # seeds = [999, 998]
-    seeds = [999]
+    seeds = [999, 998]
+    # seeds = [999]
 
     # Model HPs are from HPO
     models = [
@@ -195,7 +196,7 @@ def main():
         print(f"Running Experiment: {e['name']}")
         print(f"Experiment args: {e['args']}")
         ok = run_experiment(directory, file_name, e["name"], e["args"])
-
+        
         if not ok:
             print(f"Experiment {e['name']} failed with non-zero return code.")
 

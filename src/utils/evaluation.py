@@ -130,7 +130,6 @@ def plot_perf_matrix(perf_matrix, sequence=None, save_path='./performance_matrix
         else:
             labels.append(e[1])
 
-
     # Reverse the sequence and convert to list to display as the y_tick labels
     plt.figure(figsize=(6, 5))
     plt.style.use('fivethirtyeight')

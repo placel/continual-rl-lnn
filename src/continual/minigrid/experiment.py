@@ -20,7 +20,8 @@ def run_experiment(directory, file_name, name, args, conda_env='lnn_env'):
 
         # print(' '.join(command))
         # https://stackoverflow.com/questions/803265/getting-realtime-output-using-subprocess
-        # Not real-time, but good enough for the purposes of this project
+        # Not real-time, but good enough for the purposes of this project. 
+        # If using stdout and stderr, the buffer must be cleared or overflow will happen, freezing the process
         while True:
             line = output.stdout.readline()
             line = str(line).replace("\\r\\n'", '').replace("b'", '')
@@ -28,6 +29,7 @@ def run_experiment(directory, file_name, name, args, conda_env='lnn_env'):
             if not line: break
             ...
 
+        output.wait()
     except Exception as e:
         print(f'Error occured on experiment {name}: {e}')
         return_code = 1
@@ -91,7 +93,7 @@ def main():
     file_name = r"\continual.py"
 
     # experiment_name = f'ex-{time.time()}'
-    experiment_name = f'clear_testing'
+    experiment_name = f'phase_one_final_200'
     
     arg_list = [
         {
@@ -102,7 +104,7 @@ def main():
             'ent': 0.024115085083935874,
             'ewc': False,
             'ewc_weight': 0.0,
-            'clear': True,
+            'clear': False,
             'cfc-actor': False,
             'cfc-critic': False,
             'use-lstm': True,
@@ -115,7 +117,7 @@ def main():
             'ent': 0.032278201588886286,
             'ewc': False,
             'ewc_weight': 0.0,
-            'clear': True,
+            'clear': False,
             'cfc-actor': True,
             'cfc-critic': True,
             'use-lstm': False,
@@ -128,7 +130,7 @@ def main():
             'ent': 0.032278201588886286,
             'ewc': False,
             'ewc_weight': 0.0,
-            'clear': True,
+            'clear': False,
             'cfc-actor': True,
             'cfc-critic': False,
             'use-lstm': False,
@@ -141,7 +143,7 @@ def main():
             'ent': 0.032278201588886286,
             'ewc': False,
             'ewc_weight': 0.0,
-            'clear': True,
+            'clear': False,
             'cfc-actor': False,
             'cfc-critic': True,
             'use-lstm': False,
@@ -154,7 +156,7 @@ def main():
             'ent': 0.01691417789055679,
             'ewc': False,
             'ewc_weight': 0.0,
-            'clear': True,
+            'clear': False,
             'cfc-actor': False,
             'cfc-critic': False,
             'use-lstm': False,

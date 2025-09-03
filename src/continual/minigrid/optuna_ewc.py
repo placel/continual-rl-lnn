@@ -22,7 +22,8 @@ import pickle as pkl
 
 # Constants
 PWD = Path(__file__).resolve().parent# Get the current path
-CONTINUAL = PWD / 'continual.py'
+CONTINUAL = PWD / 'continual_before_full_clear.py'
+# CONTINUAL = PWD / 'continual.py'
 
 # Need to specify conda environment and location 
 CONDA_EXE = r"C:\Users\Logan\anaconda3\Scripts\conda.exe"
@@ -90,6 +91,12 @@ def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef,
         #     if not line: break
         #     ...
 
+        # Log outputs
+        for line in iter(proc.stdout.readline, ''):
+            if not line:
+                break
+            file.write(line)
+
         proc.wait()
         if proc.returncode != 0:
             raise optuna.TrialPruned(f"Training failed (return code {proc.returncode}). Check {log_path}")       
@@ -156,7 +163,9 @@ def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
             ent_coef = 0.01691417789055679
             hidden_dim = 256
             hidden_state_dim = None
-            ewc_weight = trial.suggest_float("ewc_weight", 1e6, 2e8, log=True)
+            # ewc_weight = trial.suggest_float("ewc_weight", 1e6, 2e8, log=True)
+            EWC_GRID = [float(1e5), float(3e5), float(1e6), float(3e6), float(1e7)]
+            ewc_weight = trial.suggest_categorical("ewc_weight_cat", EWC_GRID)
 
         seeds = [10001, 20002, 30003] # Unique HPO seeds
         seed_dirs = {}
@@ -184,9 +193,11 @@ def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
                 seed_indx=indx
             )
 
+            print('BEFORE EVAL SEQUENCE')
             # Evaluate the best performing model. Return a single score of the sum of rewards across ALL tasks
             # Optuna will then try to maximize this score
             score = eval_sequence(model_dir)
+            print('AFTER EVAL SEQUENCE')
             scores.append(score)
             seed_dirs[str(s)] = str(model_dir)
             seed_scores[str(s)] = float(score)

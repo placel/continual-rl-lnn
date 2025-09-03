@@ -153,9 +153,9 @@ def end_environment(cur_task_indx, es_triggered=False):
     # Calculate average reward per environment
     # If args.trial_id is not None, HPO is running, and an average across 3 different seed should be used
     if (args.trial_id is not None) or (args.exp_id is not None):
-        seeds = [222, 333, 444] # HPO Seeds
+        # seeds = [222, 333, 444] # HPO Seeds
         # seeds = [2222, 3333, 4444] # EWC Optuna Seeds
-        # seeds = [10, 20, 30] # Experiment Seeds
+        seeds = [10, 20, 30] # Experiment Seeds
         # seed 
         # seeds = [22, 33, 44, 55, 66] # Experiment Seeds
         means, stds = [], []
@@ -247,7 +247,7 @@ if __name__ == "__main__":
         'MiniGrid-DoorKey-5x5-v0': 8, 
         'MiniGrid-Unlock-v0': 18, 
         # 'MiniGrid-KeyCorridorS3R1-v0': 12,
-        # 'MiniGrid-LavaGapS5-v0': 15
+        'MiniGrid-LavaGapS5-v0': 15
     }   
 
     # Create a list of environment keys. Prevents the need for manually managing two env_id and patience lists
