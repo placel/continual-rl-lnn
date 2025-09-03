@@ -3,6 +3,11 @@ conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
 python ./src/continual/minigrid/experiment.py
 
+SWEEP FILE
+conda activate lnn_env
+cd Documents/School/Wales/MSc/continual-rl-lnn
+python ./src/continual/minigrid/clear_sweep.py
+
 HPO RUN
 
 conda activate lnn_env

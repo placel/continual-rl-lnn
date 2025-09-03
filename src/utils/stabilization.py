@@ -226,25 +226,44 @@ class ReservoirSampler:
 class CLEAR:
     def __init__(self, buffer_size):
         self.replay = ReservoirSampler(buffer_size)
-        # Set values needed here so I can be like clear.ratio and shit
 
-    # Used externally only on the first task for collection
+    # Add a rollout to buffer (per-env columns)
     def update_buffer(self, rollout):
         num_envs = rollout['actions'].shape[1]
+
+        # states expected as dict: {'cfc': [N,H] or None, 'lstm': (h0[Layers,N,H], c0[Layers,N,H]) or (None,None)}
+        states = rollout.get('states', {'cfc': None, 'lstm': (None, None)})
+        cfc_all = states.get('cfc', None)
+        h_all, c_all = states.get('lstm', (None, None))
+
         for e in range(num_envs):
+            # per-env initial states
+            cfc_e = cfc_all[e].contiguous() if (cfc_all is not None) else None
+            if h_all is not None and c_all is not None:
+                h0_e = h_all[:, e, :].contiguous()
+                c0_e = c_all[:, e, :].contiguous()
+                lstm_e = (h0_e, c0_e)
+            else:
+                lstm_e = (None, None)
+
             item = {
-                "obs":             rollout["obs"][:, e].contiguous(),        
-                "actions":         rollout["actions"][:, e].contiguous(),     
-                "behav_logp":      rollout["behav_logp"][:, e].contiguous(),
-                "rewards":         rollout["rewards"][:, e].contiguous(),
-                "dones":           rollout["dones"][:, e].contiguous(),   
-                "values_behav":    rollout["values_behav"][:, e].contiguous(),
-                "behav_logits":    rollout["behav_logits"][:, e].contiguous(),
-                "bootstrap_values": rollout["bootstrap_values"][e].unsqueeze(0)
+                "obs":               rollout["obs"][:, e].contiguous(),        
+                "actions":           rollout["actions"][:, e].contiguous(),     
+                "behav_logp":        rollout["behav_logp"][:, e].contiguous(),
+                "rewards":           rollout["rewards"][:, e].contiguous(),
+                "dones":             rollout["dones"][:, e].contiguous(),   
+                "values_behav":      rollout["values_behav"][:, e].contiguous(),
+                "behav_logits":      rollout["behav_logits"][:, e].contiguous(),
+                "bootstrap_values":  rollout["bootstrap_values"][e].unsqueeze(0).contiguous(),
+                "states": {
+                    "cfc":  cfc_e,          # [H] or None
+                    "lstm": lstm_e,         # (h0[Layers,H], c0[Layers,H]) or (None,None)
+                },
             }
             self.replay.add(item)
 
-    # Returns a new rollout mixed with x old replay experiences envs (usually 1)
+    # Overwrite last k env columns with replay; also copy initial states into rollout['states']
+    # Used for v-trace calculation where blending is required. 
     def blend_rollout(self, rollout, k_replay):
         timesteps, num_envs = rollout["actions"].shape
         k = min(k_replay, len(self.replay.buffer), num_envs)
@@ -252,25 +271,135 @@ class CLEAR:
 
         # mask: 0 = on-policy, 1 = replay
         is_replay = torch.zeros((timesteps, num_envs), device=rollout["actions"].device)
-        if k == 0: return rollout, is_replay
+        if k == 0:
+            return rollout, is_replay
 
-        # Apply mask to old experiences
+        # Get starting point for mixing of envs. If len(envs) is 8 and k_replay is 2, replace envs 6 and 7 with replay data 
         start = num_envs - k
         is_replay[:, start:] = 1.0
 
-        # Iterate and overwrite last envs in the rollout with old experiences. 
+        # ensure dict container for states
+        rs = rollout.get('states', {'cfc': None, 'lstm': (None, None)})
+        if not isinstance(rs, dict):
+            rs = {'cfc': None, 'lstm': (None, None)}
+
         for i, item in enumerate(replay_items):
             e = start + i
-            rollout["obs"][:, e]          = item["obs"]
-            rollout["actions"][:, e]      = item["actions"]
-            rollout["behav_logp"][:, e]   = item["behav_logp"]
-            rollout["rewards"][:, e]      = item["rewards"]
-            rollout["dones"][:, e]        = item["dones"]
-            rollout["values_behav"][:, e] = item["values_behav"]
-            rollout["behav_logits"][:, e] = item["behav_logits"]
+            rollout["obs"][:, e]           = item["obs"]
+            rollout["actions"][:, e]       = item["actions"]
+            rollout["behav_logp"][:, e]    = item["behav_logp"]
+            rollout["rewards"][:, e]       = item["rewards"]
+            rollout["dones"][:, e]         = item["dones"]
+            rollout["values_behav"][:, e]  = item["values_behav"]
+            rollout["behav_logits"][:, e]  = item["behav_logits"]
             rollout["bootstrap_values"][e] = item["bootstrap_values"].squeeze(0)
 
+            # copy initial states if containers exist
+            init_states = item.get("states", {"cfc": None, "lstm": (None, None)})
+            if init_states["cfc"] is not None and rs.get("cfc", None) is not None:
+                rs["cfc"][e] = init_states["cfc"]
+            if init_states["lstm"][0] is not None and init_states["lstm"][1] is not None:
+                lstm_rs = rs.get("lstm", (None, None))
+                if lstm_rs[0] is not None and lstm_rs[1] is not None:
+                    lstm_rs[0][:, e, :] = init_states["lstm"][0]
+                    lstm_rs[1][:, e, :] = init_states["lstm"][1]
+                    rs["lstm"] = lstm_rs
+
+        rollout["states"] = rs
         return rollout, is_replay
+
+    # Buffer-only sampler; returns rollout-like batch with N' columns and states
+    # Used for PPO + Behaviour Cloning, no v-trace. Data is not mixed here, only sampled for cloning loss defined in CLEAR paper
+    def sample_rollouts(self, count):
+        k = min(int(count), len(self.replay.buffer))
+
+        items = self.replay.sample(k)
+
+        def stack(key):
+            return torch.stack([it[key] for it in items], dim=1).contiguous()
+
+        batch = {
+            "obs":              stack("obs"),
+            "actions":          stack("actions"),
+            "behav_logp":       stack("behav_logp"),
+            "rewards":          stack("rewards"),
+            "dones":            stack("dones"),
+            "values_behav":     stack("values_behav"),
+            "behav_logits":     stack("behav_logits"),
+            "bootstrap_values": torch.cat([it["bootstrap_values"] for it in items], dim=0).contiguous(),
+        }
+
+        # Extract strates if existing
+        s0 = items[0].get("states", {"cfc": None, "lstm": (None, None)})
+        cfc0 = s0.get("cfc", None)
+        lstm0 = s0.get("lstm", (None, None))
+
+        if cfc0 is not None:
+            cfc_stack = torch.stack([it["states"]["cfc"] for it in items], dim=0).contiguous()
+            lstm_stack = (None, None)
+        elif lstm0[0] is not None and lstm0[1] is not None:
+            h_list = [it["states"]["lstm"][0] for it in items]
+            c_list = [it["states"]["lstm"][1] for it in items]
+            h0 = torch.stack(h_list, dim=1).contiguous()
+            c0 = torch.stack(c_list, dim=1).contiguous()
+            cfc_stack = None
+            lstm_stack = (h0, c0)
+        else:
+            cfc_stack = None
+            lstm_stack = (None, None)
+
+        batch["states"] = {"cfc": cfc_stack, "lstm": lstm_stack}
+        return batch
+
+
+# class CLEAR:
+#     def __init__(self, buffer_size):
+#         self.replay = ReservoirSampler(buffer_size)
+#         # Set values needed here so I can be like clear.ratio and shit
+
+#     # Used externally only on the first task for collection
+#     def update_buffer(self, rollout):
+#         num_envs = rollout['actions'].shape[1]
+#         for e in range(num_envs):
+#             item = {
+#                 "obs":             rollout["obs"][:, e].contiguous(),        
+#                 "actions":         rollout["actions"][:, e].contiguous(),     
+#                 "behav_logp":      rollout["behav_logp"][:, e].contiguous(),
+#                 "rewards":         rollout["rewards"][:, e].contiguous(),
+#                 "dones":           rollout["dones"][:, e].contiguous(),   
+#                 "values_behav":    rollout["values_behav"][:, e].contiguous(),
+#                 "behav_logits":    rollout["behav_logits"][:, e].contiguous(),
+#                 "bootstrap_values": rollout["bootstrap_values"][e].unsqueeze(0)
+#             }
+#             self.replay.add(item)
+
+#     # Returns a new rollout mixed with x old replay experiences envs (usually 1)
+#     def blend_rollout(self, rollout, k_replay):
+#         timesteps, num_envs = rollout["actions"].shape
+#         k = min(k_replay, len(self.replay.buffer), num_envs)
+#         replay_items = self.replay.sample(k)
+
+#         # mask: 0 = on-policy, 1 = replay
+#         is_replay = torch.zeros((timesteps, num_envs), device=rollout["actions"].device)
+#         if k == 0: return rollout, is_replay
+
+#         # Apply mask to old experiences
+#         start = num_envs - k
+#         is_replay[:, start:] = 1.0
+
+#         # Iterate and overwrite last envs in the rollout with old experiences. 
+#         for i, item in enumerate(replay_items):
+#             e = start + i
+#             rollout["obs"][:, e]          = item["obs"]
+#             rollout["actions"][:, e]      = item["actions"]
+#             rollout["behav_logp"][:, e]   = item["behav_logp"]
+#             rollout["rewards"][:, e]      = item["rewards"]
+#             rollout["dones"][:, e]        = item["dones"]
+#             rollout["values_behav"][:, e] = item["values_behav"]
+#             rollout["behav_logits"][:, e] = item["behav_logits"]
+#             rollout["bootstrap_values"][e] = item["bootstrap_values"].squeeze(0)
+
+#         return rollout, is_replay
 
 # class CLEAR:
 #     def __init__(self, buffer_size):

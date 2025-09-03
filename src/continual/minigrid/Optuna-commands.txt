@@ -16,3 +16,15 @@ MLP HPO RUN
 conda activate lnn_env
 cd Documents/School/Wales/MSc/continual-rl-lnn
 python ./src/continual/minigrid/optuna_hpo.py --trials 25 --total-timesteps 200_000 --model-type mlp --study-name mlp_hpo
+
+SHARED_CFC EWC RUN
+
+conda activate lnn_env
+cd Documents/School/Wales/MSc/continual-rl-lnn
+python ./src/continual/minigrid/optuna_ewc.py --trials 25 --total-timesteps 1_000 --model-type shared_cfc --study-name shared_cfc_ewc_test
+
+MLP EWC RUN
+
+conda activate lnn_env
+cd Documents/School/Wales/MSc/continual-rl-lnn
+python ./src/continual/minigrid/optuna_ewc.py --trials 35 --total-timesteps 200_000 --model-type mlp --study-name mlp_ewc

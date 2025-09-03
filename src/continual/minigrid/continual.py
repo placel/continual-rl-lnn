@@ -3,7 +3,6 @@ import random
 import time
 import json
 from dataclasses import dataclass
-# https://ncps.readthedocs.io/en/latest/examples/atari_ppo.html
 import gymnasium as gym
 import minigrid # Import needed for MiniGrid environments to run
 import numpy as np
@@ -17,13 +16,11 @@ import datetime
 from collections import deque # used for buffer determining early stopping
 from torch.utils.tensorboard import SummaryWriter
 from typing import Optional
-
 import csv
 import pathlib
 import sys
 import os
-# Needed to import utils
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))) # Needed to import utils
 
 # Custom class imports
 from utils import evaluation
@@ -36,8 +33,8 @@ class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     # Trial number (for HPO)
     trial_id: str = None
-    # Accepts a string and will create a txt file to define the current experiment
-    exp_def: str = "Testing baseline model" 
+    # Trial number (for HPO)
+    exp_id: str = None
     # Seed of the experiemnt (for reproduction)
     seed: int = 1
     # if toggled, `torch.backends.cudnn.deterministic=False`
@@ -61,6 +58,8 @@ class Args:
     hidden_dim: int = 64
     # Size of the reccurent states.  
     hidden_state_dim: Optional[int] = 128
+
+    # STABILIZATION ARGS
     # Toggle early stopping (es)
     es_flag: bool = False
     # Restore weights with Early Stopping (generally False)
@@ -71,10 +70,17 @@ class Args:
     ewc_weight: float = 0.0
     # Toggle CLEAR stabilization technique
     clear: bool = False
-    # Size of the replay buffer of CLEAR
-    clear_capacity: int = 0
+    # Size of the replay buffer per task in CLEAR (in trajectories)
+    clear_capacity: int = 32
     # Ratio of old to new experiences for CLEAR replay
     clear_ratio: float = 0.25 # Between 0.0 and 1.0
+    # All below values were taken from the CLEAR paper
+    # V-trace is a deviation from PPO, and is used in the original CLEAR paper. Experiment by using no v-trace with CLEAR, but KL-Divergence penalty will still be applied
+    vtrace: bool = False # Disabled by default as this project focuses on PPO. V-trace disabled PPO
+    vtrace_clip_rho: float = 1.0
+    vtrace_clip_c: float = 1.0
+    clear_kl_coef: float = 0.5
+    clear_value_coef: float = 0.5
 
     # ALGORITHM ARGS
     # Name of the environment
@@ -130,11 +136,6 @@ def make_env(env_id, idx, capture_video, run_name):
     
     return thunk
 
-# def create_sync_envs(env_name):
-#     return gym.vector.SyncVectorEnv(
-#         [make_env(env_name, i, args.capture_video, run_name) for i in range(args.num_envs)]
-#     )
-
 # AsyncVectorEnv is significantly faster than SyncVectorEnv (true parallelization)
 from gymnasium.vector import AsyncVectorEnv
 def create_envs(env_name):
@@ -151,10 +152,11 @@ def end_environment(cur_task_indx, es_triggered=False):
 
     # Calculate average reward per environment
     # If args.trial_id is not None, HPO is running, and an average across 3 different seed should be used
-    if args.trial_id is not None:
-        # seeds = [222, 333, 444] # HPO Seeds
-        seeds = [2222, 3333, 4444] # EWC Optuna Seeds
-        # seeds = [1, 2, 3] # Experiment Seeds
+    if (args.trial_id is not None) or (args.exp_id is not None):
+        seeds = [222, 333, 444] # HPO Seeds
+        # seeds = [2222, 3333, 4444] # EWC Optuna Seeds
+        # seeds = [10, 20, 30] # Experiment Seeds
+        # seed 
         # seeds = [22, 33, 44, 55, 66] # Experiment Seeds
         means, stds = [], []
         for s in seeds:
@@ -180,8 +182,8 @@ def end_environment(cur_task_indx, es_triggered=False):
             int(cur_task_indx),
             int(j),
             float(m), 
-            int(10),                                                # Fixed episode count (see evaluation.py)
-            str(seeds) if args.trial_id is not None else int(42),       # If an experiment or HPO trial was evaluated on a list of seeds, log that, otherwise use static 42 (evaluation.py)
+            int(10), # Fixed episode count (see evaluation.py)
+            str(seeds) if (args.trial_id is not None) or (args.exp_id is not None) else int(42), # If an experiment or HPO trial was evaluated on a list of seeds, log that, otherwise use static 42 (evaluation.py)
             time.time() - master_start_time
         ])
         eval_f.flush() 
@@ -190,7 +192,6 @@ def end_environment(cur_task_indx, es_triggered=False):
     # Don't register buffers if the last task is finished, as buffers for this task are not needed; wasted compute
     if args.ewc and not cur_task_indx == len(sequence) - 1: 
         print('Registering Buffers')
-        # Update EWC buffers 
         if args.cfc_actor or args.cfc_critic:
             ewc.register_buffers(b_obs, b_actions.long(), b_dones=b_dones, model_type='cfc', batch_size=args.minibatch_size, hidden_state_dim=args.hidden_state_dim)
         elif args.use_lstm:
@@ -198,8 +199,7 @@ def end_environment(cur_task_indx, es_triggered=False):
         else:
             ewc.register_buffers(b_obs, b_actions.long(), b_dones=b_dones, model_type='mlp')
 
-    # Save this version of the model (in case of crashes later on)
-    torch.save(agent.state_dict(), f'{model_path}/{sequence_keys[cur_task_indx]}.pt')
+    torch.save(agent.state_dict(), f'{model_path}/{sequence_keys[cur_task_indx]}.pt') # Checkpoint
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -213,7 +213,6 @@ if __name__ == "__main__":
     run_name = f'{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}'
     if args.track:
         import wandb
-
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
@@ -226,9 +225,6 @@ if __name__ == "__main__":
 
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
     os.environ['OMP_NUM_THREADS'] = '1'
-    print(args.hidden_state_dim)
-    print(f'Envs: {args.num_envs}')
-    print(f'Update Epochs: {args.update_epochs}')
 
     # Setup logging 
     writer = SummaryWriter(f'{os.path.dirname(__file__)}/runs/{run_name}')
@@ -241,6 +237,8 @@ if __name__ == "__main__":
         'total_timesteps': args.total_timesteps,
         'lr': args.learning_rate,
         'ent_coef': args.ent_coef,
+        'clear_kl_coef': args.clear_kl_coef,
+        'clear_value_coef': args.clear_value_coef
     }
 
     # Environment: early_stopping weight times
@@ -257,10 +255,7 @@ if __name__ == "__main__":
 
     # Initialize all seeds to be the same
     # Try not to modify
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+    random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed); torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Assign to GPU (or CPU if not connected)
     # device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
@@ -268,13 +263,6 @@ if __name__ == "__main__":
     print(f'Device: {device}')
 
     # Create the first batch of environments with the first environment listed in the curriculum
-    # This passes 'MiniGrid-Empty-5x5-v0' to the function, returning 4 environments synced to be able to run parallel
-    # **
-    # Most environments within MiniGrid share the same input and output space (image as input with 7 actions)
-    # so this running this on-demand doesn't cause any shape issues. Environments with larger image inputs can be 
-    # shrunk to fit the standard, or vice versa
-    # ** 
-    # envs = create_sync_envs(sequence_keys[0])
     envs = create_envs(sequence_keys[0])
 
     # Confirm the action space is Discrete (left, right, etc.), no Continuous 
@@ -317,6 +305,8 @@ if __name__ == "__main__":
         'use_lstm':         bool(args.use_lstm),
         'ewc':              bool(args.ewc),
         'ewc_weight':       float(args.ewc_weight),
+        'clear':            bool(args.clear),
+        'v-trace':          bool(args.vtrace),
         'seed':             int(args.seed)
     }
 
@@ -343,7 +333,6 @@ if __name__ == "__main__":
         }
         json.dump(combined_config, f, indent=2)
 
-    # CLAUDE CODE BELOW - > MAKE SEXIER LATER
     rollout_log_file = f'{model_path}/training_log_{args.exp_name}_{args.seed}.csv'
     
     # Create csv logging files for rollout episodes, updates, and evaluations
@@ -382,11 +371,10 @@ if __name__ == "__main__":
 
     if args.clear:
         from utils.stabilization import CLEAR
-        clear = CLEAR(args.clear_capacity)
+        clear = CLEAR(args.clear_capacity * len(sequence) - 1) # Create a buffer with size args.clear_capacity (ex. 32) per task, exluding the last as it's not needed for replay
         print(f'CLEAR initialized...')
 
     # Alogirthm Logic
-    # Storage
     # Reshape the observation space to match the shape of the image (3, 7, 7) 
     image_shape = envs.single_observation_space['image'].shape
     permuted_image = (image_shape[2], image_shape[0], image_shape[1])
@@ -401,6 +389,7 @@ if __name__ == "__main__":
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
     logits = torch.zeros((args.num_steps, args.num_envs, action_space)).to(device) 
+    bootstrap_values = torch.zeros((args.num_envs)).to(device)
 
     # Start training
     global_step = 0
@@ -417,8 +406,7 @@ if __name__ == "__main__":
         print(f'Current environment: {cur_env}')
         sequence_start_time = time.time()
 
-        # The first batch is created before this loop. If not the first batch, 
-        # create the next batch of environments associated with the current curriculum environment
+        # The first batch is created before this loop. If not the first batch, create the next batch of environments associated with the current curriculum environment
         if indx > 0: envs = create_envs(env_name=cur_env)
 
         # Initialize the states depending on if CfC is used for either Actor or Critic. Reset on each task
@@ -435,7 +423,6 @@ if __name__ == "__main__":
             )
         else:
             next_lstm_state = (None, None)
-
         
         if args.es_flag:
             # initialize the EarlyStopping class at start of every episode to ensure no overlap between task performance
@@ -510,66 +497,163 @@ if __name__ == "__main__":
                             writer.add_scalar("charts/episodic_return", infos['episode']['r'][i], global_step)
                             writer.add_scalar("charts/episodic_length", infos['episode']['l'][i], global_step)
 
-            # # CLEAR Logic
-            # After the above, pass all 4 envs into the CLEAR buffer and merge 1 old env with the new
-            # extract the returned variables like values, dones... = clear.blend_envs(rollout)
-            # alter the advatange calculation based on whether or not the environment is old and CLEAR is active
-            # if args.clear:
-            #     # Stack every tensor into a single for easier processing
-            #     rollout = torch.stack((obs, actions, logprobs, rewards, dones, values, logits, next_obs, next_done))
-            #     if indx == 0: # If on the first task, only update buffer, don't sample from it
-            #         clear.update_buffer(rollout)
-            #     else:
-            #         rollout, is_old = clear.blend_rollout(rollout, int(args.clear_ratio * args.num_envs))
-            #         obs, actions, logprobs, rewards, dones, values, logits, next_obs, next_done = rollout
-
-            # Calculate advantages for future usage in algorithm 
+            # Get the bootstrap value for advantage estimation
             with torch.no_grad():
                 # Get the critics thoughts on the value of the next state (for all envs)
                 next_value = agent.get_value(next_obs['image'], cfc_states=next_cfc_state, lstm_states=next_lstm_state, dones=next_done).reshape(1, -1)
+                bootstrap_values = next_value.squeeze(0)
 
-                advantages = torch.zeros_like(rewards).to(device)
-                last_gae_lam = 0
+            rollout = {
+                'obs': obs, 'actions': actions, 'behav_logp': logprobs,
+                'rewards': rewards, 'dones': dones, 'values_behav': values,
+                'behav_logits': logits, 'bootstrap_values': bootstrap_values,
+            }
 
-                for t in reversed(range(args.num_steps)):
-                    if t == args.num_steps - 1:
-                        next_non_terminal = 1.0 - next_done
-                        next_values = next_value
-                    else:
-                        next_non_terminal = 1.0 - dones[t + 1]
-                        next_values = values[t + 1]
+            rollout['states'] = {
+                'cfc': initial_cfc_state,
+                'lstm': initial_lstm_state
+            }
 
-                    delta = rewards[t] + args.gamma * next_values * next_non_terminal - values[t]
-                    advantages[t] = last_gae_lam = delta + args.gamma * args.gae_lambda * next_non_terminal * last_gae_lam
+            # CLEAR Logic
+            if args.clear:
+                # Update buffer every rollout, except for the final task. Replay data should only contain data from old tasks
+                if indx < (len(sequence_keys) - 1):
+                    clear.update_buffer(rollout)
                 
-                returns = advantages + values
+                is_replay = torch.zeros((args.num_steps, args.num_envs), dtype=torch.bool, device=device) # Default no replay envs
 
-            # REPLACE A RANDOM SELECTION OF 25% WITH OLD REPLAY EXPERIENCE, THEN JUST TRAIN LIKE NORMAL, APPLYING CLEAR LOSS IF CLEAR IS USED
+                # If V-trace is used, blend old with the new for V-trace calculation
+                if indx > 0 and args.vtrace:
+                    rollout, is_replay = clear.blend_rollout(
+                        rollout, int(args.clear_ratio * args.num_envs)
+                    )
+            else:
+                is_replay = torch.zeros((args.num_steps, args.num_envs), dtype=torch.bool, device=device) # No CLEAR, just mark everything on-policy
 
+            # Extract for convenience
+            O = rollout['obs']
+            A = rollout['actions']
+            R = rollout['rewards']
+            D = rollout['dones']
+            Vb = rollout['values_behav']
+            Lb = rollout['behav_logp']
+            B  = rollout['behav_logits']
+            boot_b = rollout['bootstrap_values']
+            states = rollout['states']
+
+            # Number of steps, number of envs
+            T, N = A.shape[:2]
+            advantages = torch.zeros_like(R, device=device)
+            # V-trace Claculation
+            if args.clear and args.vtrace:
+                # initial hidden states for ALL columns. These are overwritten every pass, similarly to the collection phase as we need to unroll through time
+                cfc_state = states['cfc'] if states['cfc'] is not None else None
+                lstm_states = (
+                    states['lstm'][0],
+                    states['lstm'][1]
+                ) if args.use_lstm else (None, None)
+
+                with torch.no_grad():
+                    # current policy stats along the unroll for ALL columns
+                    logp_all = torch.empty((T, N), device=device)
+                    Vcur_all = torch.empty((T, N), device=device)
+
+                    # Can't flatten as we need states. Iterate over each step (of args.num_steps), passing each batch of args.num_envs 
+                    for t in range(T):
+                        logp_t, V_t, cfc_state, lstm_states = agent.evaluate_actions(
+                            O[t], A[t].long(),
+                            cfc_states=cfc_state,
+                            lstm_states=lstm_states,
+                            dones=D[t],
+                        )
+                        logp_all[t] = logp_t.squeeze(-1)  # keep [N]
+                        Vcur_all[t] = V_t.squeeze(-1)
+                    
+                    # Importance weight calculation
+                    iw = (logp_all - Lb).exp()
+                    rho = iw.clamp(max=args.vtrace_clip_rho)
+                    c = iw.clamp(max=args.vtrace_clip_c)
+
+                    vs = torch.empty_like(Vcur_all)
+                    for t in reversed(range(T)):
+                        v_t   = Vcur_all[t]
+                        v_tp1 = boot_b if t == T - 1 else Vcur_all[t + 1]
+                        delta = R[t] + args.gamma * v_tp1 * (1.0 - D[t]) - v_t
+                        if t == T - 1:
+                            vs[t] = v_t + rho[t] * delta
+                        else:
+                            vs[t] = v_t + rho[t] * delta + args.gamma * c[t] * (vs[t + 1] - Vcur_all[t + 1])
+
+                    next_vs = torch.empty_like(Vcur_all)
+                    next_vs[:-1] = vs[1:]
+                    next_vs[-1]  = boot_b
+                    advantages = (R + args.gamma * next_vs * (1.0 - D) - Vcur_all).detach()
+                    returns    = vs.detach()
+
+            # V-trace disabled; GAE as normal
+            else:
+                last_gae_lam = 0.0
+                for t in reversed(range(T)):
+                    if t == T - 1:
+                        next_non_terminal = 1.0 - next_done
+                        next_values = boot_b
+                    else:
+                        next_non_terminal = 1.0 - D[t + 1]
+                        next_values = Vb[t + 1]
+                    delta = R[t] + args.gamma * next_values * next_non_terminal - Vb[t]
+                    last_gae_lam = delta + args.gamma * args.gae_lambda * next_non_terminal * last_gae_lam
+                    advantages[t] = last_gae_lam
+                returns = advantages + Vb
+            
             # Flatten batch
-            b_obs = obs.reshape((-1,) + permuted_image)
-            b_logprobs = logprobs.reshape(-1)
-            b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
+            b_obs = O.reshape((-1,) + permuted_image)
+            b_actions = A.reshape((-1,) + envs.single_action_space.shape)
+            b_logprobs = Lb.reshape(-1)
             b_advantages = advantages.reshape(-1)
             b_returns = returns.reshape(-1)
-            b_values = values.reshape(-1)
-            b_dones = dones.reshape(-1)
+            b_values = Vb.reshape(-1)
+            b_dones = D.reshape(-1)
+            b_behav_logits = B.reshape(-1, action_space)
+            b_values_behav = Vb.reshape(-1)
 
             # Optimize the policy (actor) and value (critic) networks
             assert args.num_envs % args.num_minibatches == 0
             envs_per_batch = args.num_envs // args.num_minibatches
             env_inds = np.arange(args.num_envs)
             flat_inds = np.arange(args.batch_size).reshape(args.num_steps, args.num_envs)
+            flat_is_replay = is_replay.reshape(-1)
             clip_fracs = []
-            # This is how many times we perfrom backprop on the model after batch collection (usually 4 times)
+            
+            if args.norm_adv:
+                flat_is_replay = is_replay.reshape(-1).bool()
+                on_pol = ~flat_is_replay
+                m = b_advantages[on_pol].mean()
+                s = b_advantages[on_pol].std(unbiased=False).clamp_min(1e-8)
+                b_advantages = (b_advantages - m) / s
+
+            # if using PPO + KL-Divergence cloning, no v-trace, calculate scaling per minibatch
+            apply_bc = args.clear and (not args.vtrace) and indx > 0
+            if apply_bc:
+                num_minibatches = args.num_envs // envs_per_batch
+                # scale so total BC weight per update equals (clear_*_coef)
+                bc_kl_scale = args.clear_kl_coef / (args.update_epochs * num_minibatches)
+                bc_v_scale  = args.clear_value_coef  / (args.update_epochs * num_minibatches)
+
             for epoch in range(args.update_epochs):
-                # Shuffle the batch so it's not sequential
+                if apply_bc: # Extract relevant CLEAR + Cloning samples from replay buffer
+                    bc = clear.sample_rollouts(count=args.num_envs) # Sample num_envs number trajectories at every epoch
+                    O_bc, A_bc, D_bc = bc['obs'], bc['actions'], bc['dones']
+                    Bc = bc['behav_logits'].detach()
+                    Vb_bc = bc['values_behav'].detach()
+                    S_bc = bc['states']
+                    burn_len = min(max(1, int(args.clear_ratio * args.num_steps)), O_bc.shape[0]) # Number of 'burn-in' steps. We need states to unroll, but not the full sequence
+
                 np.random.shuffle(env_inds)
-                # Iterate over minibatches for incremental learning
                 for start in range(0, args.num_envs, envs_per_batch):
                     end = start + envs_per_batch
                     mb_env_inds = env_inds[start:end]
                     mb_inds = flat_inds[:, mb_env_inds].ravel()
+                    mb_mask = flat_is_replay[mb_inds].bool()
 
                     # Prepare hidden states
                     cfc_pass = initial_cfc_state[mb_env_inds] if args.cfc_actor or args.cfc_critic else None
@@ -577,7 +661,7 @@ if __name__ == "__main__":
                     lstm_pass = (initial_lstm_state[0][:, mb_env_inds], initial_lstm_state[1][:, mb_env_inds]) if args.use_lstm else (None, None)
 
                     # Forward pass (with grad) the minibatch through to the model to get values associated with the provided action
-                    _, new_log_prob, entropy, new_value, _, _, _ = agent.get_action_and_value(
+                    _, new_log_prob, entropy, new_value, _, _, new_logits = agent.get_action_and_value(
                         b_obs[mb_inds], 
                         cfc_states=cfc_pass, 
                         lstm_states=lstm_pass, 
@@ -596,50 +680,137 @@ if __name__ == "__main__":
                         approx_kl = ((ratio - 1) - log_ratio).mean()
                         clip_fracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
 
-                    # Store minibatch advantages
-                    mb_advantages = b_advantages[mb_inds]
+                    # Flatten minibatch selections
+                    mb_adv = b_advantages[mb_inds]      # from V-trace (if clear) or GAE
+                    mb_ret = b_returns[mb_inds]         # targets: v_s (if clear) or GAE returns
+                    mb_val = b_values[mb_inds]          # critic baseline at storage
+                    mb_logp_mu = b_logprobs[mb_inds]        # behavior logπμ(a|s)
+                    mb_newlogp = new_log_prob                 # current logπθ(a|s)
+                    mb_entropy = entropy                    # entropy from current policy
+                    mb_newvalue = new_value.view(-1)          # critic prediction from forward pass
+                    # Importance weights ρ = πθ / μ
+                    rho_mb = ((mb_newlogp - mb_logp_mu).exp().clamp(max=args.vtrace_clip_rho)).detach()
+                    
+                    # Normalize before minbatch instead of here when CLEAR is enabled to prevent skewing
+                    # if args.norm_adv:
+                    #     mb_adv = (mb_adv - mb_adv.mean()) / (mb_adv.std() + 1e-8)
 
-                    # Not sure i'll use this
-                    if args.norm_adv:
-                        mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
-
-                    # Calculate the Policy loss
-                    pg_loss1 = -mb_advantages * ratio # In the equation
-                    # Here's where any potential clipping would take place
-                    pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
-                    pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-
-                    # Calculate the value loss
-                    new_value = new_value.view(-1)
-                    # Clips the v_loss (enabled by default)
-                    if args.clip_vloss:
-                        v_loss_unclipped = (new_value - b_returns[mb_inds]) ** 2
-
-                        v_clipped = b_values[mb_inds] + torch.clamp(
-                            new_value - b_values[mb_inds],
-                            -args.clip_coef,
-                            args.clip_coef
-                        )
-
-                        v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
-                        v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                        v_loss = 0.5 * v_loss_max.mean()
+                    # Policy loss
+                    if args.clear and args.vtrace:
+                        # CLEAR paper: V-trace PG for all samples
+                        pg_loss = (-rho_mb * mb_newlogp * mb_adv).mean()
                     else:
-                        v_loss = 0.5 * ((new_value - b_returns[mb_inds]) ** 2).mean()
+                        # Standard PPO clipped objective
+                        log_ratio = mb_newlogp - mb_logp_mu
+                        ratio = log_ratio.exp()
+                        pg1 = -mb_adv * ratio
+                        pg2 = -mb_adv * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
+                        pg_loss = torch.max(pg1, pg2).mean()
 
-                    entropy_loss = entropy.mean()
-                    loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+                    # Value loss
+                    if args.clip_vloss:
+                        v_unclipped = (mb_newvalue - mb_ret) ** 2
+                        v_clipped = mb_val + torch.clamp(mb_newvalue - mb_val, -args.clip_coef, args.clip_coef)
+                        v_clipped = (v_clipped - mb_ret) ** 2
+                        v_loss = 0.5 * torch.max(v_unclipped, v_clipped).mean()
+                    else:
+                        v_loss = 0.5 * ((mb_newvalue - mb_ret) ** 2).mean()
 
+                    # CLEAR policy/value cloning on replay only
+                    kl_bc = torch.tensor(0.0, device=mb_newvalue.device)
+                    value_clone = torch.tensor(0.0, device=mb_newvalue.device)
+
+                    # Apply KL-Divergence to replay experiences only
+                    if args.vtrace and mb_mask.any() and indx > 0:
+                        # Policy cloning
+                        behav_logits_mb = b_behav_logits[mb_inds][mb_mask].detach()
+                        new_logits_mb = new_logits[mb_mask]
+                        logp_old = torch.log_softmax(behav_logits_mb, dim=-1)
+                        logp_new = torch.log_softmax(new_logits_mb, dim=-1)
+                        p_old = logp_old.exp()
+                        kl_bc = (p_old * (logp_old - logp_new)).sum(dim=-1).mean()
+
+                        # Value cloning is MSE
+                        v_old = b_values_behav[mb_inds][mb_mask].detach()
+                        v_new = mb_newvalue[mb_mask]
+                        value_clone = ((v_new - v_old) ** 2).mean()
+
+                    # final loss before any potential Behaviour Cloning below if CLEAR no V-trace
+                    loss = pg_loss - args.ent_coef * mb_entropy.mean() + args.vf_coef * v_loss
+
+                    # Behaviour Cloning (BC) per-minibatch cloning on PPO (only on replay data)
+                    if apply_bc:
+                        # initial states for selected replay columns
+                        cfc_state = (S_bc['cfc'][mb_env_inds] if (args.cfc_actor or args.cfc_critic) else None)
+                        if args.use_lstm:
+                            h0, c0 = S_bc['lstm']
+                            lstm_state = (h0[:, mb_env_inds, :].contiguous(), c0[:, mb_env_inds, :].contiguous())
+                        else:
+                            lstm_state = (None, None)
+
+                        is_recurrent = args.use_lstm or args.cfc_actor or args.cfc_critic
+
+                        # If the model is recurrent, states need to be unrolled to gather proper representation of current policy ('burn-in')
+                        if is_recurrent:
+                            kl_sum = torch.zeros((), device=device)
+                            vmse_sum = torch.zeros((), device=device)
+
+                            for t in range(burn_len):
+                                _, _, _, v_new_bc, cfc_state, lstm_state, logits_new_bc = agent.get_action_and_value(
+                                    O_bc[t, mb_env_inds],
+                                    cfc_states=cfc_state, lstm_states=lstm_state,
+                                    action=A_bc[t, mb_env_inds].long(), dones=D_bc[t, mb_env_inds]
+                                )
+                                # Policy cloning
+                                logp_old = torch.log_softmax(Bc[t, mb_env_inds], dim=-1)
+                                logp_new = torch.log_softmax(logits_new_bc, dim=-1)
+                                p_old = logp_old.exp()
+                                kl_sum  = kl_sum  + (p_old * (logp_old - logp_new)).sum(dim=-1).mean()
+                                # Value cloning (MSE)
+                                vmse_sum = vmse_sum + ((v_new_bc.view(-1) - Vb_bc[t, mb_env_inds].view(-1)) ** 2).mean()
+
+                            kl_bc_mb   = kl_sum  / burn_len
+                            vmse_bc_mb = vmse_sum / burn_len
+
+                        else: # MLP doesn't need burn-in, just batch process the minibatch
+                            sl = slice(0, burn_len)
+                            obs_be  = O_bc[sl, mb_env_inds].flatten(0, 1).contiguous()
+                            act_be  = A_bc[sl, mb_env_inds].flatten().long()
+                            done_be = D_bc[sl, mb_env_inds].flatten()
+
+                            # Current policy on old data (single forward)
+                            _, _, _, v_new_bc, _, _, logits_new_bc = agent.get_action_and_value(
+                                obs_be, cfc_states=None, lstm_states=(None, None),
+                                action=act_be, dones=done_be
+                            )
+
+                            # Detached behavior targets
+                            old_logits = Bc[sl, mb_env_inds].flatten(0, 1).detach()
+                            old_vals   = Vb_bc[sl, mb_env_inds].flatten().detach()
+
+                            # Policy Cloning
+                            logp_old = torch.log_softmax(old_logits, dim=-1)
+                            logp_new = torch.log_softmax(logits_new_bc, dim=-1)
+                            kl_bc_mb = (logp_old.exp() * (logp_old - logp_new)).sum(dim=-1).mean()
+
+                            # Value cloning (MSE)
+                            vmse_bc_mb = ((v_new_bc.view(-1) - old_vals) ** 2).mean()
+                            
+                        # Apply per-minibatch BC penalty (already scaled by epochs * minibatches)
+                        loss = loss + bc_kl_scale * kl_bc_mb + bc_v_scale * vmse_bc_mb
+
+                    if args.clear and indx > 0:
+                        loss = loss + args.clear_kl_coef * kl_bc + args.clear_value_coef * value_clone
+
+                    # Apply Elastic Weight Consolidation if toggled
                     if args.ewc:
                         if indx > 0: # If still on the first task, don't compute EWC loss
-                            # Apply Elastic Weight Consolidation
-                            ewc_loss = ewc.compute_ewc_loss() # Is 0.0 on first run, but updates over time
+                            ewc_loss = ewc.compute_ewc_loss()
                             # Since EWC strength is so large, scale it as a ratio, but don't let it beat PPO loss
-                            # print(f'EWC Loss: {ewc_loss}')
                             scale = min(1.0, (loss.detach().abs() / (ewc_loss + 1e-8)).item()) # + 1e-8 incase loss is 0.0 -> Divide by 0 error
                             loss = loss + (scale * ewc_loss)
 
-                    # Apply learning to agent
+                    # Update agent
                     optimizer.zero_grad()
                     loss.backward()
                     nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
@@ -660,7 +831,7 @@ if __name__ == "__main__":
                 int(global_step),
                 float(pg_loss.item()),
                 float(v_loss.item()),
-                float(entropy_loss.item()),
+                float(mb_entropy.mean().item()),
                 float(approx_kl.item()),
                 float(np.mean(clip_fracs)),
                 float(explained_var),
@@ -668,14 +839,14 @@ if __name__ == "__main__":
                 float(current_sps),
                 time.time() - master_start_time 
             ])
-            if indx % 64 == 0: update_f.flush()
             
-            # Copied for logging
+            update_f.flush() # Flush every other iteration
+
             # TRY NOT TO MODIFY: record rewards for plotting purposes
             writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
             writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
             writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
-            writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
+            writer.add_scalar("losses/entropy", mb_entropy.mean().item(), global_step)
             writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
             writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
             writer.add_scalar("losses/clipfrac", np.mean(clip_fracs), global_step)
@@ -716,7 +887,6 @@ if __name__ == "__main__":
     rewards, _, _ = evaluation.mean_reward(agent, sequence_keys)
     mean_reward = np.mean(rewards)
 
-
     # Make plots and save in current directory
     evaluation.plot_perf_matrix(perf_matrix, sequence=sequence_keys, save_path=f'{model_path}/performance_matrix.svg') # Save as SVG to prevent blur
     evaluation.plot_metrics(fwt, bwt, mean_reward, save_path=f'{model_path}/metrics.svg')
@@ -728,7 +898,6 @@ if __name__ == "__main__":
     np.save(f'{model_path}/performance_std_matrix.npy', perf_std_matrix)
 
     print(f'Final training time: {datetime.timedelta(seconds=time.time() - master_start_time)}')
-
+    
     torch.save(agent.state_dict(), f'{model_path}/final_model.pt')
-    # Print a BEL character to screen. Will play an audible sound in terminal indicating it's done
-    print('\a')
+    print('\a') # Print a BEL character to screen. Will play an audible sound in terminal indicating it's done
