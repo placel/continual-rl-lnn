@@ -18,16 +18,6 @@ THIS SHOULD'VE BEEN A CLASS, NOT STATIC
 # If doing few_shot learning in the future (more meta-learning) set few_shot to k trainable steps
 def mean_reward(agent, envs, seed=42, episodes=10, return_all=True, render_mode=None):
 
-    # List of possible actions the model can take. Used for debugging
-    action_list = [
-        'left',
-        'right',
-        'forward',
-        'pickup',
-        'drop',
-        'toggle',
-        'done'
-    ]
     # Extract the device 
     device = next(agent.parameters()).device
     rewards, stds, all_returns = [], [], []
@@ -45,7 +35,6 @@ def mean_reward(agent, envs, seed=42, episodes=10, return_all=True, render_mode=
                 state, _ = env.reset() # Don't overwrite the initial seed if not the first task
             
             done = False
-            action_buffer = []
             episode_reward = 0.0 # Keep track of total reward throughout episode
 
             # If the model uses a CfC layer for actor or critic, generate states to use, or set to None
@@ -63,28 +52,21 @@ def mean_reward(agent, envs, seed=42, episodes=10, return_all=True, render_mode=
                 lstm_states = (None, None)
                 
             while not done:
-                # Normalize the image, reshape for cnn, and unsqueeze to add batch dimension
+                # Reshape image for cnn, and unsqueeze to add batch dimension
                 img = torch.tensor(np.array(state['image']), dtype=torch.float32, device=device).permute(2, 0, 1).unsqueeze(0)
 
                 # Get the action to take
-                # No gradient as we don't want the model learning here
+                # no_grad as we don't want the model learning here
                 with torch.no_grad():
                     action, _, _, _, cfc_states, lstm_states, _ = agent.get_action_and_value(img, cfc_states, lstm_states, dones=dones, deterministic=True) # Deterministic set True as we don't want stochasticity to influence the model during eval
                 
                 action = action.item()
-                # action_buffer.append(action)
-                # print(f'Action taken: {action_list[action]}')
-                # APply the action to current state
                 state, reward, term, trunc, _ = env.step(action)
                 done = np.logical_or(term, trunc)
                 episode_reward += reward
 
-                # if len(action_buffer) > 10:
-                    
-
             total_reward.append(episode_reward) # Append the episode reward for averaging later
 
-        # mean_reward = np.mean(total_reward) # Average out the current environments reward
         total_reward = np.asarray(total_reward, dtype=np.float32)
 
         mean = float(total_reward.mean())
@@ -170,21 +152,19 @@ def plot_reward(path, sequence, save_path='./rewards.svg'):
     # Load the models associated 'episodes.csv' file
     df = pd.read_csv(f'{path}/episodes.csv')
     
-    # Set up modern styling
     plt.style.use('fivethirtyeight')
     _, ax = plt.subplots(figsize=(12, 8))
     
-    # Modern color palette
     colors = ['#1f77b4', '#ff7f0e', "#25a325", "#d61e1e", '#9467bd']
     
     # Extract the timestep and boundaries
     task_boundaries_steps = [list(df[df['task_index'] == i]['global_step'])[0] for i in range(len(sequence))]
     
-    # Extract and plot x & y coordinates with better styling
+    # Extract and plot x & y coordinates with styling
     x, y = df['global_step'], df['episodic_return']
     ax.plot(x, y, linewidth=2.5, alpha=0.8, color=colors[0], zorder=3)
     
-    # Add vertical lines with modern styling
+    # Add vertical lines
     for indx, task in enumerate(sequence):
         if indx == 0: continue
         ax.axvline(x=task_boundaries_steps[indx], color=colors[indx], linestyle='dashed', 
@@ -217,7 +197,6 @@ def plot_reward(path, sequence, save_path='./rewards.svg'):
     ax.tick_params(axis='both', which='major', labelsize=12)
     
     plt.tight_layout()
-    
     plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close()
 
@@ -227,12 +206,10 @@ def plot_loss_curve(path, sequence, save_path='./rewards.svg'):
     # Load the models associated 'updates.csv' file
     df = pd.read_csv(f'{path}/updates.csv')
     
-    # Set up modern styling
     plt.style.use('fivethirtyeight')
-    _, ax = plt.subplots(figsize=(12, 8))
-    
-    # Modern color palette
     colors = ['#1f77b4', '#ff7f0e', "#25a325", "#d61e1e", '#9467bd']
+    _, ax = plt.subplots(figsize=(12, 8))
+
     
     # Extract the timestep and boundaries
     task_boundaries_steps = [list(df[df['task_index'] == i]['global_step'])[0] for i in range(len(sequence))]
@@ -241,7 +218,6 @@ def plot_loss_curve(path, sequence, save_path='./rewards.svg'):
     x, y = df['global_step'], df['policy_loss']
     ax.plot(x, y, linewidth=2.5, alpha=0.8, color=colors[0], zorder=3)
     
-    # Add vertical lines with modern styling
     for indx, task in enumerate(sequence):
         if indx == 0: continue
         ax.axvline(x=task_boundaries_steps[indx], color=colors[indx], linestyle='dashed', 
@@ -256,7 +232,6 @@ def plot_loss_curve(path, sequence, save_path='./rewards.svg'):
     ax.grid(True, alpha=0.75, linestyle='dashed', linewidth=0.5)
     ax.set_facecolor('#fafafa')
     
-    # Modern legend
     legend = ax.legend(loc='upper right', frameon=True, fancybox=True, shadow=True, fontsize=12)
     legend.get_frame().set_facecolor('white')
     legend.get_frame().set_alpha(0.9)
@@ -266,14 +241,8 @@ def plot_loss_curve(path, sequence, save_path='./rewards.svg'):
     ax.spines['right'].set_visible(False)
     ax.spines['left'].set_linewidth(1.5)
     ax.spines['bottom'].set_linewidth(1.5)
-    
-    # Set proper margins
-    # ax.margins(0)
-    # ax.set_ylim(0, 1)
-    # Better tick labels
     ax.tick_params(axis='both', which='major', labelsize=12)
     
     plt.tight_layout()
-    
     plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close()

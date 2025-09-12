@@ -1,5 +1,0 @@
-From Paper:
-It said a buffer size of 5 million minimum. So if I'm using input size of 12 times smaller, I could do 12x smaller buffer size and justify it. 
-Then could later experiment with 50-50 mixes
-
-50-50 mix of on policy and off policy in the buffer 

@@ -1,36 +1,47 @@
-from pathlib import Path
-import os
-
 import numpy as np
 
-PWD = Path(__file__).resolve().parent
+# Critic CfC
+acc_vals = np.array([
+    0.47, 
+    0.47,
+    0.24,
+    0.23,
+    0.33
+])
 
-import numpy as np
+fwt_vals = np.array([
+    0.0,
+    0.01,
+    -0.12,
+    0.13,
+    0.0
+])
 
-perf_matrix = np.array([[0.96, 0.00, 0.00],
-               [0.95, 0.96, 0.00],
-               [0.93, 0.00, 0.93]])
+bwt_vals = np.array([
+    -0.54,
+    -0.64,
+    -0.32,
+    -0.77,
+    -0.0
+])
 
-M = perf_matrix.copy()                 # shape (T, T)
-T = M.shape[0]
-final = M[T-1]                         # R_i^(T)
+wall_vals = np.array([
+    331.7881746292114,
+    339.60935258865356,
+    344.18259167671204,
+    334.86193585395813,
+    324.888578414917
+])
 
-print('FINAL')
-print(final)
+acc_mean, acc_std = acc_vals.mean(), acc_vals.std(ddof=1)
+fwt_mean, fwt_std = fwt_vals.mean(), fwt_vals.std(ddof=1)
+bwt_mean, bwt_std = bwt_vals.mean(), bwt_vals.std(ddof=1)
+wall_mean, wall_std = wall_vals.mean(), wall_vals.std(ddof=1)
 
-# Per-task forgetting F_i = max_{k<T} R_i^(k) - R_i^(T)
-F = np.max(M[:T-1, :], axis=0) - final
-FGT = np.mean(F)                       # overall forgetting
+avg_minutes = wall_mean / 60
+std_minutes = wall_std / 60
 
-# Nice visuals
-import matplotlib.pyplot as plt
-plt.imshow(M, aspect='auto', origin='lower', cmap='viridis')
-plt.colorbar(label='Return / Accuracy')
-plt.xlabel('Task i'); plt.ylabel('After task k')
-plt.title('Performance matrix')
-plt.show()
-
-plt.bar(np.arange(T), F)
-plt.xlabel('Task i'); plt.ylabel('Forgetting F_i')
-plt.title(f'Per-task forgetting (mean={FGT:.3f})')
-plt.show()
+print(f"ACC: {acc_mean:.2f} ± {acc_std:.2f}")
+print(f"FWT: {fwt_mean:.2f} ± {fwt_std:.2f}")
+print(f"BWT: {bwt_mean:.2f} ± {bwt_std:.2f}")
+print(f"Wall-time (min): {avg_minutes:.2f} ± {std_minutes:.2f}")

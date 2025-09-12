@@ -58,6 +58,10 @@ def make_trial(experiment_name, args):
         base_args.append(str(args['ewc_weight']))
     if args['clear']:
         base_args.append('--clear')
+        base_args.append('--clear_kl_coef')
+        base_args.append(str(args['clear_kl_coef']))
+        base_args.append('--clear_value_coef')
+        base_args.append(str(args['clear_value_coef']))
     if args['cfc-actor']:
         base_args.append('--cfc-actor')
     if args['cfc-critic']:
@@ -88,12 +92,11 @@ def make_experiment(experiment_name, arg_list):
     return experiments
     
 def main():
+    
     directory = r"C:\Users\Logan\Documents\School\Wales\MSc\continual-rl-lnn\src\continual\minigrid"
-    # file_name = r"\continual.py"
     file_name = r"\continual.py"
 
-    # experiment_name = f'ex-{time.time()}'
-    experiment_name = f'phase_one_final_200'
+    experiment_name = f'phase_two'
     
     arg_list = [
         {
@@ -102,9 +105,11 @@ def main():
             'hidden-state-dim': 128,
             'lr': 0.0008183828832312314,
             'ent': 0.024115085083935874,
-            'ewc': False,
-            'ewc_weight': 0.0,
+            'ewc': True,
+            'ewc_weight': 24854.12329285346,
             'clear': False,
+            'clear_kl_coef': 0.5,
+            'clear_value_coef': 0.5,
             'cfc-actor': False,
             'cfc-critic': False,
             'use-lstm': True,
@@ -115,9 +120,11 @@ def main():
             'hidden-state-dim': 256,
             'lr': 0.0002967453235099826,
             'ent': 0.032278201588886286,
-            'ewc': False,
-            'ewc_weight': 0.0,
+            'ewc': True,
+            'ewc_weight': 10694.601699328055,
             'clear': False,
+            'clear_kl_coef': 0.5,
+            'clear_value_coef': 0.5,
             'cfc-actor': True,
             'cfc-critic': True,
             'use-lstm': False,
@@ -128,9 +135,11 @@ def main():
             'hidden-state-dim': 256,
             'lr': 0.0002967453235099826,
             'ent': 0.032278201588886286,
-            'ewc': False,
-            'ewc_weight': 0.0,
+            'ewc': True,
+            'ewc_weight': 10694.601699328055,
             'clear': False,
+            'clear_kl_coef': 0.5,
+            'clear_value_coef': 0.5,
             'cfc-actor': True,
             'cfc-critic': False,
             'use-lstm': False,
@@ -141,9 +150,11 @@ def main():
             'hidden-state-dim': 256,
             'lr': 0.0002967453235099826,
             'ent': 0.032278201588886286,
-            'ewc': False,
-            'ewc_weight': 0.0,
+            'ewc': True,
+            'ewc_weight': 10694.601699328055,
             'clear': False,
+            'clear_kl_coef': 0.5,
+            'clear_value_coef': 0.5,
             'cfc-actor': False,
             'cfc-critic': True,
             'use-lstm': False,
@@ -154,9 +165,11 @@ def main():
             'hidden-state-dim': 0, # 0 instead of None, as None throws an error (quick fix)
             'lr': 0.0005378582501432388,
             'ent': 0.01691417789055679,
-            'ewc': False,
-            'ewc_weight': 0.0,
+            'ewc': True,
+            'ewc_weight': 10_000_000,
             'clear': False,
+            'clear_kl_coef': 0.5,
+            'clear_value_coef': 0.5,
             'cfc-actor': False,
             'cfc-critic': False,
             'use-lstm': False,

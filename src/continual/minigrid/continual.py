@@ -13,7 +13,6 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 import datetime
-from collections import deque # used for buffer determining early stopping
 from torch.utils.tensorboard import SummaryWriter
 from typing import Optional
 import csv

@@ -16,7 +16,8 @@ def run_experiment(directory, file_name, name, args, conda_env='lnn_env'):
     print(f"Starting experiment: {name}")
     print(f"Using args: {' '.join(args)}")
 
-    conda_exe = r"C:\Users\Logan\anaconda3\Scripts\conda.exe"
+    # CONDA EXE
+    conda_exe = r"PATH_TO_CONDA_EXE"
     return_code = 1
     try:
         command = [conda_exe, "run", "-n", conda_env, "python", directory + file_name] + args
@@ -43,16 +44,15 @@ def run_experiment(directory, file_name, name, args, conda_env='lnn_env'):
 def make_trial(experiment_name, model_cfg, seed, coef_pair):
     # fixed hyperparams per model; only seed and coefs vary
     base_args = [
-        "--exp-id",               str(0),
-        "--exp-name",             str(experiment_name),
-        "--seed",                 str(seed),
-        "--learning-rate",                   str(model_cfg["lr"]),
-        "--ent-coef",             str(model_cfg["ent"]),
-        "--hidden-dim",           str(model_cfg["hidden-dim"]),
-        # PPO + BC toggles
+        "--exp-id",                 str(0),
+        "--exp-name",               str(experiment_name),
+        "--seed",                   str(seed),
+        "--learning-rate",          str(model_cfg["lr"]),
+        "--ent-coef",               str(model_cfg["ent"]),
+        "--hidden-dim",             str(model_cfg["hidden-dim"]),
         "--clear",
-        "--clear-value-coef",     str(coef_pair["value"]),
-        "--clear-kl-coef",        str(coef_pair["kl"]),
+        "--clear-value-coef",       str(coef_pair["value"]),
+        "--clear-kl-coef",          str(coef_pair["kl"]),
     ]
 
     # hidden-state-dim optional for MLP
@@ -71,6 +71,7 @@ def make_trial(experiment_name, model_cfg, seed, coef_pair):
     
     return {"name": name, "args": base_args}
 
+# Loop through the seeds and coef_pairs, creating variations of each model with each pair
 def make_experiments(experiment_name, models, seeds, coef_pairs):
     experiments = []
     for m in models:
@@ -79,6 +80,7 @@ def make_experiments(experiment_name, models, seeds, coef_pairs):
                 experiments.append(make_trial(experiment_name, m, s, pair))
     return experiments
 
+# Copied from optuna_ewc.py
 def eval_function(model_dir):
     print(f'Model Directory: {model_dir}')
     config = json.loads((model_dir / 'config.json').read_text())
@@ -138,22 +140,23 @@ def append_result_entry(model_key: str, kl: float, val: float, seed: int, score:
     with open(LOG_PATH, 'w') as f:
         json.dump(data, f, indent=2)
 
+# Adapted the experiment.py file for a brief sweep search of CLEAR with ChatGPT. 
 def main():
-    directory = r"C:\Users\Logan\Documents\School\Wales\MSc\continual-rl-lnn\src\continual\minigrid"
+    # Expcted the root directory of PATH/continual-rl-lnn\src\continual\minigrid
+    directory = r"PATH/continual-rl-lnn\src\continual\minigrid"
     file_name = r"\continual.py"
 
     experiment_name = "clear_sweep"
 
-    # Small, paired sweep. Edit if needed.
+    # Small range. Values are paired as prelimiary tests showed stronger results with pairing
     coef_pairs = [
         {"kl": 0.1, "value": 0.1},
         {"kl": 0.3, "value": 0.3},
         {"kl": 0.5, "value": 0.5},
     ]
 
-    # Keep seeds minimal for insurance only.
+    # Only 2 seeds as time is limited
     seeds = [999, 998]
-    # seeds = [999]
 
     # Model HPs are from HPO
     models = [
@@ -201,14 +204,14 @@ def main():
             print(f"Experiment {e['name']} failed with non-zero return code.")
 
         base_dir = PWD / 'experiments' / 'clear_sweep' / 'models'
-        # Sort through the directory to find the newest file (p.state().st_mtime)
+        # Sort through the directory to find the newest file (p.state().st_mtime) # Found in optuna_ewc.py
         run_dirs = sorted([p for p in base_dir.iterdir() if p.is_dir()], key=lambda p: p.stat().st_mtime)
 
-        # Evaluate the latest trial
+        # Evaluate the latest trial using Optuna like 
         score = eval_function(run_dirs[-1])
         print(f"[EVAL] {e['name']} -> score: {score}")
 
-        # Log the result to the master json log file 
+        # Log the result to the master json log file. Here's where the results are stored
         model_key, kl, val, seed = parse_trial_name(e["name"])
         append_result_entry(model_key, kl, val, seed, float(score))
 

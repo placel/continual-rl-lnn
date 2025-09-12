@@ -1,7 +1,7 @@
 import datetime
 from pathlib import Path
 from dataclasses import dataclass
-from subprocess import Popen, PIPE, STDOUT, TimeoutExpired
+from subprocess import Popen, PIPE, STDOUT
 import re, math
 METRIC_RE = re.compile(r"global_step=(\d+).*episodic_return=([-+]?\d*\.?\d+)")
 
@@ -9,25 +9,20 @@ METRIC_RE = re.compile(r"global_step=(\d+).*episodic_return=([-+]?\d*\.?\d+)")
 import optuna
 import optuna.visualization as vis
 import matplotlib.pyplot as plt
-import subprocess
 import json 
 import re
 import tyro
 import time
 import sys
 import os
-import torch
 import numpy as np
-import pickle as pkl
 
-# Constants
 PWD = Path(__file__).resolve().parent# Get the current path
 CONTINUAL = PWD / 'continual_before_full_clear.py'
-# CONTINUAL = PWD / 'continual.py'
 
 # Need to specify conda environment and location 
-CONDA_EXE = r"C:\Users\Logan\anaconda3\Scripts\conda.exe"
-CONDA_ENV = 'lnn_env'
+CONDA_EXE = r"PATH_TO_CONDA_EXE"
+CONDA_ENV = 'CONDA_ENV'
 
 # Need to import utils
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
@@ -167,7 +162,7 @@ def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
             EWC_GRID = [float(1e5), float(3e5), float(1e6), float(3e6), float(1e7)]
             ewc_weight = trial.suggest_categorical("ewc_weight_cat", EWC_GRID)
 
-        seeds = [10001, 20002, 30003] # Unique HPO seeds
+        seeds = [10001, 20002, 30003] # Unique EWC seeds
         seed_dirs = {}
         seed_scores = {}
 
@@ -193,11 +188,9 @@ def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
                 seed_indx=indx
             )
 
-            print('BEFORE EVAL SEQUENCE')
             # Evaluate the best performing model. Return a single score of the sum of rewards across ALL tasks
             # Optuna will then try to maximize this score
             score = eval_sequence(model_dir)
-            print('AFTER EVAL SEQUENCE')
             scores.append(score)
             seed_dirs[str(s)] = str(model_dir)
             seed_scores[str(s)] = float(score)

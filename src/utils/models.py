@@ -6,6 +6,7 @@ from ncps.torch import CfC, LTC
 from ncps.wirings import AutoNCP
 from torch.distributions.categorical import Categorical
 
+# Remove randomness from initialized weights
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
@@ -108,6 +109,7 @@ class CriticHead(nn.Module):
 
         # Final output space of 1 as we want a value, not an action
     
+    # DEPRECATED
     def forward(self, x, cfc_states=None):
         # If the model uses a CfC Layer, states need to be managed
         # This results in a different forward structure
@@ -146,6 +148,7 @@ class ActorHead(nn.Module):
 
         # Final output space of action_space to choose an action
     
+    # DEPRECATED
     def forward(self, x, cfc_states=None):
         # If the model uses a CfC Layer, states need to be managed
         # This results in a different forward structure

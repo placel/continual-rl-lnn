@@ -13,3 +13,7 @@ models/
 **/models/
 
 HPO/
+
+plots/
+
+experiments/
