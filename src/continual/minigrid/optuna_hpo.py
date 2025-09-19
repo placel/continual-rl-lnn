@@ -46,7 +46,7 @@ class Args:
 # Launch the continual.py script and train a model 
 # on a sequence of tasks with the given arguments
 def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef, 
-                hidden_dim, hidden_state_dim, seed, timeout_sec, trial_number, trial, seed_indx):
+                hidden_dim, hidden_state_dim, seed, timeout_sec, trial_number, trial, seed_indx, **hps):
     
     use_lstm = (model_type == 'lstm')
     cfc_actor = (model_type == 'cfc_actor' or model_type == 'shared_cfc')
@@ -73,6 +73,15 @@ def run_trial(exp_name, total_timesteps, model_type, lr, ent_coef,
         cmd.append('--cfc-actor')
     if cfc_critic:
         cmd.append('--cfc-critic')
+
+    # Append PPO/trainer knobs from **hps
+    # Booleans become flags when True; numerics/strings as "--key value"
+    for k, v in hps.items():
+        cli_key = f"--{k.replace('_','-')}"
+        if isinstance(v, bool):
+            if v: cmd += [cli_key]
+        elif v is not None:
+            cmd += [cli_key, str(v)]
 
     os.makedirs(PWD / 'HPO' / exp_name / 'logs', exist_ok=True)
     log_path = PWD / 'HPO' / exp_name / 'logs' / f't{trial_number}_logs.log'
@@ -155,25 +164,10 @@ def eval_sequence(model_dir):
     perf_matrix_path = model_dir / 'performance_matrix.npy'
     perf_matrix = np.load(perf_matrix_path)
 
-    threshold = 0.8 # Average return of .8 may be considered 'learned' for HPO sake
-    scores = []
-    # Iterate over the performance matrix to calculate a score for this trial. Penalize the model if it doesn't learn the task after it's trained on it
-    # All tasks need to be learned for fair evaluation
-    for t in range(len(sequence)):
-        row = perf_matrix[t] # Row of the current trained model
-        curr_val = row[t] # Value of the current trained task
-        seen_tasks_mean = float(perf_matrix[:t+1].mean()) # Mean of all tasks up to the current task only. 
+    means = [np.mean(perf_matrix[t, :t+1]) for t in range(len(sequence))]
+    score = np.sum(means) / len(sequence)
 
-        # If the current task wasn't learned (less than .8 return average), add a penalty of -0.8, and double the result to really tell Optuna it's not a good result 
-        if curr_val < threshold:
-            score = (curr_val - threshold) * 2
-        # Otherwise, include any potential retention of tasks in the current score, to encourage retention
-        else:
-            score = seen_tasks_mean
-
-        scores.append(score)
-
-    return float(np.mean(scores)) # Score will be maximized by Optuna
+    return float(score) # Score will be maximized by Optuna
 
 def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
 
@@ -194,6 +188,29 @@ def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
         # MLP doesn't utilize a hidden_state_dimension
         if model_type == 'mlp':
             hidden_state_dim = None
+
+        # GPT
+        # PPO core knobs (keep set)
+        gamma         = trial.suggest_float("gamma", 0.97, 0.995)
+        gae_lambda    = trial.suggest_float("gae_lambda", 0.90, 0.99)
+        clip_coef     = trial.suggest_float("clip_coef", 0.12, 0.28)
+        vf_coef       = trial.suggest_float("vf_coef", 0.3, 1.0)
+        max_grad_norm = trial.suggest_float("max_grad_norm", 0.3, 1.0)
+        update_epochs = trial.suggest_int("update_epochs", 3, 6)
+        num_minibatches = trial.suggest_categorical("num_minibatches", [2,4,8])
+        num_steps     = trial.suggest_categorical("num_steps", [64,128,256])
+
+        # GPT
+        hps = dict(
+            gamma=gamma,
+            gae_lambda=gae_lambda,
+            clip_coef=clip_coef,
+            vf_coef=vf_coef,
+            max_grad_norm=max_grad_norm,
+            update_epochs=update_epochs,
+            num_minibatches=num_minibatches,
+            num_steps=num_steps
+        )
 
         seeds = [1001, 2002, 3003] # Unique HPO seeds
         seed_dirs = {}
@@ -217,7 +234,8 @@ def make_objective(total_timesteps, study_name, timeout_per_trial, model_type):
                 timeout_sec=timeout_per_trial,
                 trial_number=trial.number,
                 trial=trial,
-                seed_indx=indx
+                seed_indx=indx,
+                **hps
             )
 
             # Evaluate the best performing model. Return a single score of the sum of rewards across ALL tasks
@@ -265,8 +283,8 @@ def main():
         direction='maximize', # 'maximize' the objective. In this case, a combined mean reward on all tasks (Maximize model performance across all tasks)
         load_if_exists=True,
         # sampler=optuna.samplers.TPESampler(seed=8), Initial Sampler to use to establish a baseline
-        sampler=optuna.samplers.TPESampler(seed=33, multivariate=True, group=True), # Further refine with this sampler config
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=8, n_warmup_steps=2, interval_steps=1)
+        sampler=optuna.samplers.TPESampler(n_startup_trials=40, seed=33, multivariate=True, group=True), # Further refine with this sampler config
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=2, interval_steps=1)
     )
 
     # If a previous study was found and unfinished, progress will be displayed

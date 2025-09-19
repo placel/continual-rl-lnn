@@ -57,6 +57,8 @@ class Args:
     hidden_dim: int = 64
     # Size of the reccurent states.  
     hidden_state_dim: Optional[int] = 128
+    # Use raw pixels instead of symbolic
+    pixel_obs: bool = False
 
     # STABILIZATION ARGS
     # Toggle early stopping (es)
@@ -123,6 +125,7 @@ class Args:
     minibatch_size: int = 0
     num_iterations: int = 0
 
+from minigrid.wrappers import RGBImgPartialObsWrapper
 def make_env(env_id, idx, capture_video, run_name):
     def thunk():
         if capture_video and idx == 0:
@@ -130,6 +133,10 @@ def make_env(env_id, idx, capture_video, run_name):
             env = gym.wrappers.RecordVideo(env, f'videos/{run_name}')
         else:
             env = gym.make(env_id)
+
+        if args.pixel_obs:
+            env = RGBImgPartialObsWrapper(env)   # adds an "rgb" key with RGB obs
+        
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
     
@@ -152,14 +159,14 @@ def end_environment(cur_task_indx, es_triggered=False):
     # Calculate average reward per environment
     # If args.trial_id is not None, HPO is running, and an average across 3 different seed should be used
     if (args.trial_id is not None) or (args.exp_id is not None):
-        # seeds = [222, 333, 444] # HPO Seeds
+        seeds = [222, 333, 444] # HPO Seeds
         # seeds = [2222, 3333, 4444] # EWC Optuna Seeds
-        seeds = [10, 20, 30] # Experiment Seeds
+        # seeds = [10, 20, 30] # Experiment Seeds
         # seed 
         # seeds = [22, 33, 44, 55, 66] # Experiment Seeds
         means, stds = [], []
         for s in seeds:
-            mean, std, _ = evaluation.mean_reward(agent, sequence_keys, seed=s)
+            mean, std, _ = evaluation.mean_reward(agent, sequence_keys, seed=s, pixels=args.pixel_obs)
             means.append(mean)
             stds.append(std)
 
@@ -168,7 +175,7 @@ def end_environment(cur_task_indx, es_triggered=False):
         stds = np.stack(stds).std(axis=0, ddof=1)
     else:
         seeds = None
-        means, stds, _ = evaluation.mean_reward(agent, sequence_keys)
+        means, stds, _ = evaluation.mean_reward(agent, sequence_keys, pixels=args.pixel_obs)
 
     # Assign rewards to the current task index
     perf_matrix[cur_task_indx] = means
@@ -246,7 +253,7 @@ if __name__ == "__main__":
         'MiniGrid-DoorKey-5x5-v0': 8, 
         'MiniGrid-Unlock-v0': 18, 
         # 'MiniGrid-KeyCorridorS3R1-v0': 12,
-        'MiniGrid-LavaGapS5-v0': 15
+        # 'MiniGrid-LavaGapS5-v0': 15
     }   
 
     # Create a list of environment keys. Prevents the need for manually managing two env_id and patience lists
@@ -257,8 +264,10 @@ if __name__ == "__main__":
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed); torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Assign to GPU (or CPU if not connected)
-    # device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
-    device = torch.device('cpu') # 'cpu' is actually faster in Gym at this small scale 
+    if args.pixel_obs:
+        device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
+    else:
+        device = torch.device('cpu') # 'cpu' is actually faster in Gym at this small scale (symbolic)
     print(f'Device: {device}')
 
     # Create the first batch of environments with the first environment listed in the curriculum
@@ -306,7 +315,8 @@ if __name__ == "__main__":
         'ewc_weight':       float(args.ewc_weight),
         'clear':            bool(args.clear),
         'v-trace':          bool(args.vtrace),
-        'seed':             int(args.seed)
+        'seed':             int(args.seed),
+        'pixel_obs':        bool(args.pixel_obs)
     }
 
     agent = models.Agent(model_config).to(device)
@@ -359,7 +369,7 @@ if __name__ == "__main__":
     # This is needed to compute Forward Transfer. Returns mean reward for each task
     baselines = []
     print('Collecting random baselines...')
-    baselines = evaluation.mean_reward(agent, sequence_keys, return_all=False)
+    baselines = evaluation.mean_reward(agent, sequence_keys, return_all=False, pixels=args.pixel_obs)
 
     # EWC Initialization
     if args.ewc:
@@ -376,6 +386,7 @@ if __name__ == "__main__":
     # Alogirthm Logic
     # Reshape the observation space to match the shape of the image (3, 7, 7) 
     image_shape = envs.single_observation_space['image'].shape
+    print(f'Image shape: {image_shape}')
     permuted_image = (image_shape[2], image_shape[0], image_shape[1])
 
     # Keep track of these per rollout. Ex. store only num_steps(128) rows with num_envs(4) columns for values
@@ -430,8 +441,10 @@ if __name__ == "__main__":
         # Reset the environment (initialize for new envs)
         next_obs, _ = envs.reset(seed=args.seed)
 
+        print(next_obs['image'].shape)
         # Permutate the observations to be (batch_size=4 (envs), channels=3, height, width)
         next_obs['image'] = torch.tensor(np.array(next_obs['image']), dtype=torch.float32, device=device).permute(0, 3, 1, 2)
+        print(next_obs['image'].shape)
         next_done = torch.zeros(args.num_envs).to(device)
 
         env_step_count = 0
@@ -860,7 +873,7 @@ if __name__ == "__main__":
             if args.es_flag and (iteration > early_stopping_interval) and (iteration % early_stopping_interval == 0):
                 
                 # Evaluate the mode on the current environment to check if early stopping should trigger
-                es_mean = evaluation.mean_reward(agent=agent, envs=[cur_env], episodes=5) # Increase episodes for more reliable mean_reward
+                es_mean = evaluation.mean_reward(agent=agent, envs=[cur_env], episodes=5, pixels=args.pixel_obs) # Increase episodes for more reliable mean_reward
                 es_triggered = es_monitor.update(es_mean[0], model=agent)
 
                 if es_triggered:
@@ -883,7 +896,7 @@ if __name__ == "__main__":
     fwt = evaluation.compute_fwt(perf_matrix, baselines)
     bwt = evaluation.compute_bwt(perf_matrix)
     # Take the mean of all averaged rewards to get a singular average
-    rewards, _, _ = evaluation.mean_reward(agent, sequence_keys)
+    rewards, _, _ = evaluation.mean_reward(agent, sequence_keys, pixels=args.pixel_obs)
     mean_reward = np.mean(rewards)
 
     # Make plots and save in current directory

@@ -58,39 +58,14 @@ class SharedNetwork(nn.Module):
             self.linear1 = layer_init(nn.Linear(embedding_dim, hidden_dim))
             self.linear2 = layer_init(nn.Linear(hidden_dim, hidden_dim))
             
-    def forward(self, x, cfc_states=None, lstm_states=(None, None)):
-        
-        if cfc_states is None and lstm_states == (None, None):
-            x = self.shared_embedding(x)
-        # If the model uses a CfC Layer, states need to be managed
-        # This results in a different forward structure
-        # If the model (self) has the attribute 'cfc1', it was initialized to have a CfC layer, and this will execute
-        if hasattr(self, 'cfc1'):
-            # Reshaping to add the time dimension in the 1st index so we have (batch_size, time_dim, features)
-            # Features is all feature maps sequentially combined  
-            x = x.unsqueeze(1)
+    def forward(self, x):
+        x = self.shared_embedding(x)
 
-            # Process through CfC layer, extracting model states
-            x, cfc_states = self.cfc1(x, cfc_states)
-            # Remove extra time dimension
-            x = x.squeeze(1)
-        # Same case for LSTM, states need proper management
-        elif hasattr(self, 'lstm1'):
-            # Reshaping to add the time dimension in the 1st index so we have (batch_size, time_dim, features)
-            # Features is all feature maps sequentially combined  
-            x = x.unsqueeze(1)
+        # Otherwise, process as normal
+        x = F.relu(self.linear1(x))
+        x = F.relu(self.linear2(x))
 
-            # Process through CfC layer, extracting model states
-            x, lstm_states = self.lstm1(x, lstm_states)
-            # Remove extra time dimension
-            x = x.squeeze(1)
-        # Process as normal
-        else:
-            # Otherwise, process as normal
-            x = F.relu(self.linear1(x))
-            x = F.relu(self.linear2(x))
-
-        return x, cfc_states, lstm_states
+        return x
 
 class CriticHead(nn.Module):
 
@@ -100,37 +75,9 @@ class CriticHead(nn.Module):
         # If we're using a CfC layer for the Actor Model, apply CfC
         # Otherwise use simple MLP
         if use_cfc:
-            # self.cfc1 = CfC(embedding_dim, hidden_state_dim, batch_first=True) # batch_first=True is required with the ncps library
             self.cfc1 = CfC(embedding_dim, hidden_state_dim, batch_first=True) # batch_first=True is required with the ncps library
-            # self.output = layer_init(nn.Linear(hidden_state_dim, 1), std=1.0)
         else:
             self.linear1 = layer_init(nn.Linear(embedding_dim, hidden_dim))
-            # self.output = layer_init(nn.Linear(hidden_dim, 1), std=1.0)
-
-        # Final output space of 1 as we want a value, not an action
-    
-    # DEPRECATED
-    def forward(self, x, cfc_states=None):
-        # If the model uses a CfC Layer, states need to be managed
-        # This results in a different forward structure
-        # If the model (self) has the attribute 'cfc1', it was initialized to have a CfC layer, and this will execute
-        if hasattr(self, 'cfc1'):
-            # Reshaping to add the time dimension in the 1st index so we have (batch_size, time_dim, features)
-            # Features is all feature maps sequentially combined  
-            x = x.unsqueeze(1)
-
-            # Process through CfC layer, extracting model states
-            x, cfc_states = self.cfc1(x, cfc_states)
-
-            # Remove extra time dimension
-            x = x.squeeze(1)
-
-        # Process as normal
-        else:
-            # Otherwise, process as normal
-            x = F.relu(self.linear1(x))
-
-        return x, cfc_states
 
 class ActorHead(nn.Module):
 
@@ -141,34 +88,8 @@ class ActorHead(nn.Module):
         # Otherwise use simple MLP
         if use_cfc:
             self.cfc1 = CfC(embedding_dim, hidden_state_dim, batch_first=True) # batch_first=True is required with the ncps library
-            # self.output = layer_init(nn.Linear(hidden_state_dim, action_space), std=0.01)
         else:
             self.linear1 = layer_init(nn.Linear(embedding_dim, hidden_dim))
-            # self.output = layer_init(nn.Linear(hidden_dim, action_space), std=0.01)
-
-        # Final output space of action_space to choose an action
-    
-    # DEPRECATED
-    def forward(self, x, cfc_states=None):
-        # If the model uses a CfC Layer, states need to be managed
-        # This results in a different forward structure
-        if hasattr(self, 'cfc1'):
-            # Reshaping to add the time dimension in the 1st index so we have (batch_size, time_dim, features)
-            # Features is all feature maps sequentially combined  
-            x = x.unsqueeze(1)
-
-            # Process through CfC layer and get states
-            x, cfc_states = self.cfc1(x, cfc_states)
-
-            # Remove extra time dimension
-            x = x.squeeze(1)
-
-        # Process the data as normal
-        else:
-            x = F.relu(self.linear1(x))
-
-        # Otherwise, process as normal
-        return x, cfc_states
 
 # Combine the Actor & Critic into a single model 
 class Agent(nn.Module):
@@ -183,6 +104,7 @@ class Agent(nn.Module):
         self.actor_cfc = config['actor_cfc']
         self.critic_cfc = config['critic_cfc']
         self.use_lstm = config['use_lstm']
+        self.pixel_obs = config['pixel_obs']
         
         self.shared_embedding = SharedEmbedding(self.hidden_dim) # Shared image embedding
         self.shared_cfc = None # Shared CfC layer
@@ -190,9 +112,15 @@ class Agent(nn.Module):
 
         # Compute the output size dynamically; needed as input for critic and actor
         with torch.no_grad():
-            dummy_image = torch.zeros(1, 3, 7, 7)  # Example MiniGrid obs (C=3,H=7,W=7)
+            # If using pixels as input, use a different dummy pass for initial embedding size
+            if self.pixel_obs:
+                dummy_image = torch.zeros(1, 3, 56, 56)  # Example MiniGrid obs - pixel (C=3,H=7,W=7)
+            else:
+                dummy_image = torch.zeros(1, 3, 7, 7)  # Example MiniGrid obs - symbolic (C=3,H=7,W=7)
+                
             shared_out = self.shared_embedding(dummy_image)
             embedding_dim = shared_out.shape[1]
+            
         # If both Actor and Critic are using CfC, share the network to ensure consistency
         if self.actor_cfc and self.critic_cfc:
             print('Actor & Critic CfC')
@@ -314,7 +242,7 @@ class Agent(nn.Module):
         elif self.use_lstm: 
             output, _ = self.get_lstm_states(image, lstm_states, dones)
         elif self.shared_baseline: 
-            output, _, _ = self.shared_baseline(image) # lstm_states is None by default. If LSTM isn't being used, this won't be an issue
+            output = self.shared_baseline(image) # lstm_states is None by default. If LSTM isn't being used, this won't be an issue
             
         return self.critic_head(output)
     
@@ -329,7 +257,7 @@ class Agent(nn.Module):
             output, lstm_states = self.get_lstm_states(image, lstm_states, dones)
         # Lastly, if no CfC or LSTM is being used (MLP), process normally
         else:
-            output, _, _ = self.shared_baseline(image)
+            output = self.shared_baseline(image)
 
         logits = self.actor_head(output)
         value = self.critic_head(output)

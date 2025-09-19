@@ -13,10 +13,14 @@ import pandas as pd
 THIS SHOULD'VE BEEN A CLASS, NOT STATIC
 """
 
+"""
+COULD BATCH THE ENVS INSTEAD OF ONE BY ONE AS IT IS NOW
+"""
+
 # Iterate over every environment and play each 10 times to aquire perfromance
 # Returns a list of average rewards for each environment 
 # If doing few_shot learning in the future (more meta-learning) set few_shot to k trainable steps
-def mean_reward(agent, envs, seed=42, episodes=10, return_all=True, render_mode=None):
+def mean_reward(agent, envs, seed=42, episodes=10, return_all=True, render_mode=None, pixels=False):
 
     # Extract the device 
     device = next(agent.parameters()).device
@@ -25,6 +29,10 @@ def mean_reward(agent, envs, seed=42, episodes=10, return_all=True, render_mode=
     for env_id in envs:
 
         env = gym.make(env_id, render_mode=render_mode)
+        if pixels:
+            from minigrid.wrappers import RGBImgPartialObsWrapper
+            env = RGBImgPartialObsWrapper(env)
+
         total_reward = []
 
         state, _ = env.reset(seed=seed)
